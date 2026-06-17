@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "react-hooks", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": "off"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/.vite/**"],
+  "overrides": [
+    {
+      "files": ["web/**/*.{ts,tsx}"],
+      "env": { "browser": true, "node": false }
+    },
+    {
+      "files": ["backend/**/*.ts"],
+      "env": { "node": true, "browser": false }
+    }
+  ]
+}

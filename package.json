@@ -1,0 +1,27 @@
+{
+  "name": "piet",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present run dev",
+    "dev:web": "pnpm --filter @piet/web run dev",
+    "dev:backend": "pnpm --filter @piet/backend run dev",
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "^7.0.0-dev.20260515.1",
+    "oxfmt": "^0.50.0",
+    "oxlint": "^1.65.0"
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "pnpm": ">=11"
+  },
+  "packageManager": "pnpm@11.7.0+sha512.19cc852c120c7125760f2443ee6be0ca5b40f9f50598de1a09a1f177503e010e57c23c77646e01e761de59bf874fb22a3398c33ab9691fc13eb946b6f0f4d620"
+}
