@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { CanvasRequest, CanvasToolResult, ClientMessage, ServerMessage } from "./protocol.ts";
+import type {
+  CanvasRequest,
+  CanvasToolResult,
+  ClientMessage,
+  CodingStatusMessage,
+  ServerMessage,
+} from "./protocol.ts";
 
 export type ChatRole = "user" | "assistant" | "system" | "thinking" | "tool";
 
@@ -15,6 +21,7 @@ export type ChatMessage = {
 };
 
 export type CanvasRequestHandler = (request: CanvasRequest) => Promise<CanvasToolResult>;
+export type CodingStatusHandler = (message: CodingStatusMessage) => void;
 
 export type AgentChat = {
   ready: boolean;
@@ -28,6 +35,7 @@ export type AgentChat = {
   setModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
   setThinking: (level: ModelThinkingLevel) => void;
   setCanvasRequestHandler: (handler: CanvasRequestHandler | null) => void;
+  setCodingStatusHandler: (handler: CodingStatusHandler | null) => void;
 };
 
 const randomId = (): string =>
@@ -47,6 +55,7 @@ export const useAgentSocket = (url: string): AgentChat => {
   ]);
   const wsRef = useRef<WebSocket | null>(null);
   const canvasRequestHandlerRef = useRef<CanvasRequestHandler | null>(null);
+  const codingStatusHandlerRef = useRef<CodingStatusHandler | null>(null);
   const textMsgIdRef = useRef<string | null>(null);
   const thinkMsgIdRef = useRef<string | null>(null);
 
@@ -62,6 +71,10 @@ export const useAgentSocket = (url: string): AgentChat => {
 
   const setCanvasRequestHandler = useCallback((handler: CanvasRequestHandler | null): void => {
     canvasRequestHandlerRef.current = handler;
+  }, []);
+
+  const setCodingStatusHandler = useCallback((handler: CodingStatusHandler | null): void => {
+    codingStatusHandlerRef.current = handler;
   }, []);
 
   useEffect(() => {
@@ -170,6 +183,11 @@ export const useAgentSocket = (url: string): AgentChat => {
           textMsgIdRef.current = null;
           thinkMsgIdRef.current = null;
           break;
+        case "coding_status_start":
+        case "coding_status_update":
+        case "coding_status_end":
+          codingStatusHandlerRef.current?.(msg);
+          break;
         case "error":
           appendMessage({
             id: randomId(),
@@ -254,5 +272,6 @@ export const useAgentSocket = (url: string): AgentChat => {
     setModel,
     setThinking,
     setCanvasRequestHandler,
+    setCodingStatusHandler,
   };
 };

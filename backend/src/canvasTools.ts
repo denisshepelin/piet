@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { Type } from "@earendil-works/pi-ai";
+import { Buffer } from "node:buffer";
+import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -56,13 +57,33 @@ const normalizeScope = (scope: string | undefined): CanvasScope => {
   return "viewport";
 };
 
+const getSelectionParams = (maxShapes: number | undefined): GetCanvasParams => ({
+  scope: "selection",
+  maxShapes: normalizeMaxShapes(maxShapes),
+});
+
 const normalizeMaxShapes = (maxShapes: number | undefined): number => {
   if (maxShapes === undefined || !Number.isFinite(maxShapes)) return DEFAULT_MAX_SHAPES;
   return Math.max(1, Math.min(MAX_SHAPES_LIMIT, Math.floor(maxShapes)));
 };
 
+const redactCanvasImage = (value: unknown): unknown => {
+  if (typeof value !== "object" || value === null || !("image" in value)) return value;
+
+  const snapshot = value as CanvasSnapshot;
+  if (!snapshot.image) return value;
+
+  return {
+    ...snapshot,
+    image: {
+      ...snapshot.image,
+      data: `[base64 image omitted: ${formatSize(Buffer.byteLength(snapshot.image.data, "base64"))}]`,
+    },
+  };
+};
+
 const stringifyForModel = (value: unknown): string => {
-  const json = JSON.stringify(value, null, 2);
+  const json = JSON.stringify(redactCanvasImage(value), null, 2);
   const truncation = truncateHead(json, {
     maxLines: DEFAULT_MAX_LINES,
     maxBytes: DEFAULT_MAX_BYTES,
@@ -71,6 +92,22 @@ const stringifyForModel = (value: unknown): string => {
   if (!truncation.truncated) return json;
 
   return `${truncation.content}\n\n[Canvas output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Call get_canvas with a smaller scope or maxShapes.]`;
+};
+
+const snapshotContent = (snapshot: CanvasSnapshot): (TextContent | ImageContent)[] => {
+  const content: (TextContent | ImageContent)[] = [
+    { type: "text", text: stringifyForModel(snapshot) },
+  ];
+
+  if (snapshot.image) {
+    content.push({
+      type: "image",
+      data: snapshot.image.data,
+      mimeType: snapshot.image.mimeType,
+    });
+  }
+
+  return content;
 };
 
 const send = (socket: WebSocket, msg: ServerMessage): void => {
@@ -142,17 +179,18 @@ export const createCanvasTools = (socket: WebSocket) => {
     name: "get_canvas",
     label: "Get Canvas",
     description:
-      "Get tldraw current page context as JSON. Scope can be viewport (visible area), page (whole current canvas/page), or selection. Output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
+      "Get tldraw current page context as JSON plus a PNG render of the returned shapes. Scope can be viewport (visible area) or page (whole current canvas/page). JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
     promptSnippet:
-      "Get tldraw canvas context from the active viewport, selected shapes, or whole page.",
+      "Get tldraw canvas context from the active viewport or whole page, including a PNG render.",
     promptGuidelines: [
       "Use get_canvas before answering questions about the drawing or before adding shapes that depend on current canvas context.",
       "Use get_canvas with scope 'viewport' first for visible context; use scope 'page' only when the whole current canvas is needed.",
+      "Use get_selection instead when the user refers to selected objects or the current selection.",
     ],
     parameters: Type.Object({
       scope: Type.Optional(
         Type.String({
-          description: "viewport (default), page (whole current canvas/page), or selection.",
+          description: "viewport (default) or page (whole current canvas/page).",
         }),
       ),
       maxShapes: Type.Optional(
@@ -172,7 +210,38 @@ export const createCanvasTools = (socket: WebSocket) => {
       );
 
       return {
-        content: [{ type: "text", text: stringifyForModel(result) }],
+        content: snapshotContent(result),
+        details: result,
+      };
+    },
+  });
+
+  const getSelectionTool = defineTool({
+    name: "get_selection",
+    label: "Get Selection",
+    description:
+      "Get the currently selected tldraw shapes as JSON plus a PNG render. Use this when the user refers to selected objects. Returns an empty shapes array when nothing is selected.",
+    promptSnippet: "Get the current selected group of tldraw objects, including a PNG render.",
+    promptGuidelines: [
+      "Use get_selection when the user says selected, selection, these objects, this group, or asks about highlighted objects.",
+      "If no shapes are selected, ask the user to select objects or use get_canvas for broader canvas context.",
+    ],
+    parameters: Type.Object({
+      maxShapes: Type.Optional(
+        Type.Number({
+          description: `Maximum selected shapes to return, 1-${MAX_SHAPES_LIMIT}. Default ${DEFAULT_MAX_SHAPES}.`,
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const result = await requestCanvas<CanvasSnapshot>(
+        "get_canvas",
+        getSelectionParams(params.maxShapes),
+        signal,
+      );
+
+      return {
+        content: snapshotContent(result),
         details: result,
       };
     },
@@ -186,7 +255,7 @@ export const createCanvasTools = (socket: WebSocket) => {
     promptSnippet: "Create tldraw shapes on the current canvas/page.",
     promptGuidelines: [
       "Use put_shapes to add or sketch content on the tldraw canvas when the user asks to modify the drawing.",
-      "Call get_canvas first when you need existing positions, selected shape ids, or the visible viewport center.",
+      "Call get_selection first when editing selected objects; call get_canvas when you need broader context or the visible viewport center.",
       "When using put_shapes, pass plain text in the shape text field; the client converts it to tldraw rich text.",
     ],
     parameters: Type.Object({
@@ -220,7 +289,7 @@ export const createCanvasTools = (socket: WebSocket) => {
   });
 
   return {
-    tools: [getCanvasTool, putShapesTool],
+    tools: [getCanvasTool, getSelectionTool, putShapesTool],
     handleResponse(response: CanvasResponse): void {
       const request = pending.get(response.requestId);
       if (!request) return;

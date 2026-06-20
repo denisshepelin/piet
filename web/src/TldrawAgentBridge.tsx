@@ -1,19 +1,22 @@
-import { useEffect, type ReactElement } from "react";
+import { useEffect, useRef, type ReactElement } from "react";
 import { useEditor } from "tldraw";
 import type {
   CanvasBounds,
   CanvasRequest,
   CanvasScope,
   CanvasShapeSummary,
+  CanvasSnapshotImage,
   CanvasSnapshot,
   CanvasToolResult,
+  CodingStatusMessage,
   PutCanvasShape,
   PutShapesResult,
 } from "./protocol.ts";
-import type { CanvasRequestHandler } from "./useAgentSocket.ts";
+import type { CanvasRequestHandler, CodingStatusHandler } from "./useAgentSocket.ts";
 
 type Props = {
   setCanvasRequestHandler: (handler: CanvasRequestHandler | null) => void;
+  setCodingStatusHandler: (handler: CodingStatusHandler | null) => void;
 };
 
 const DEFAULT_MAX_SHAPES = 200;
@@ -32,6 +35,38 @@ const boundsToJson = (bounds: CanvasBounds | undefined): CanvasBounds | undefine
       }
     : undefined;
 
+const unionBounds = (boundsList: CanvasBounds[]): CanvasBounds | undefined => {
+  if (boundsList.length === 0) return undefined;
+
+  const minX = Math.min(...boundsList.map((bounds) => bounds.x));
+  const minY = Math.min(...boundsList.map((bounds) => bounds.y));
+  const maxX = Math.max(...boundsList.map((bounds) => bounds.x + bounds.w));
+  const maxY = Math.max(...boundsList.map((bounds) => bounds.y + bounds.h));
+
+  return {
+    x: minX,
+    y: minY,
+    w: maxX - minX,
+    h: maxY - minY,
+  };
+};
+
+const blobToBase64 = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result);
+      const match = result.match(/^data:[^;]+;base64,(.*)$/);
+      if (!match) {
+        reject(new Error("could not convert canvas image to base64"));
+        return;
+      }
+      resolve(match[1]!);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("could not read canvas image"));
+    reader.readAsDataURL(blob);
+  });
+
 const richTextFromPlainText = (text: string): Record<string, unknown> => ({
   type: "doc",
   content: text
@@ -42,6 +77,9 @@ const richTextFromPlainText = (text: string): Record<string, unknown> => ({
         : { type: "paragraph", content: [{ type: "text", text: line }] },
     ),
 });
+
+const isPietInternalShape = (meta: unknown): boolean =>
+  isRecord(meta) && isRecord(meta.piet) && meta.piet.kind === "coding-status";
 
 const plainTextFromRichText = (richText: unknown): string | undefined => {
   if (!isRecord(richText) || !Array.isArray(richText.content)) return undefined;
@@ -103,13 +141,49 @@ const prepareShape = (
   return shape;
 };
 
-export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElement | null => {
+export const TldrawAgentBridge = ({
+  setCanvasRequestHandler,
+  setCodingStatusHandler,
+}: Props): ReactElement | null => {
   const editor = useEditor();
+  const statusOrderRef = useRef<string[]>([]);
 
   useEffect(() => {
+    const renderCanvasImage = async (
+      scope: CanvasScope,
+      shapeIds: string[],
+      viewport: CanvasBounds,
+      boundsList: CanvasBounds[],
+    ): Promise<CanvasSnapshotImage | undefined> => {
+      if (shapeIds.length === 0) return undefined;
+
+      const bounds = scope === "viewport" ? viewport : unionBounds(boundsList);
+      if (!bounds) return undefined;
+
+      await editor.fonts.loadRequiredFontsForCurrentPage(editor.options.maxFontsToLoadBeforeRender);
+
+      const image = await editor.toImage(
+        shapeIds as never[],
+        {
+          format: "png",
+          background: false,
+          padding: scope === "viewport" ? 0 : 16,
+          scale: 1,
+          bounds: scope === "viewport" ? bounds : undefined,
+        } as never,
+      );
+
+      const data = await blobToBase64(image.blob);
+      return {
+        mimeType: "image/png",
+        data,
+        bounds,
+      };
+    };
+
     const getCanvas = (
       request: Extract<CanvasRequest, { action: "get_canvas" }>,
-    ): CanvasSnapshot => {
+    ): Promise<CanvasSnapshot> => {
       const scope = normalizeScope(request.params.scope);
       const maxShapes = normalizeMaxShapes(request.params.maxShapes);
       const viewport = editor.getViewportPageBounds();
@@ -120,38 +194,47 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         scope === "selection" ? editor.getSelectedShapes() : editor.getCurrentPageShapesSorted();
 
       const shapesWithBounds = sourceShapes
+        .filter((shape) => !isPietInternalShape(shape.meta))
         .map((shape) => ({ shape, bounds: editor.getShapePageBounds(shape) }))
         .filter(
           ({ bounds }) => scope !== "viewport" || (bounds ? bounds.collides(viewport) : false),
         );
 
-      const shapes: CanvasShapeSummary[] = shapesWithBounds
-        .slice(0, maxShapes)
-        .map(({ shape, bounds }) => {
-          const props = isRecord(shape.props) ? { ...shape.props } : {};
-          const text = plainTextFromRichText(props.richText);
-          delete props.richText;
+      const returnedShapesWithBounds = shapesWithBounds.slice(0, maxShapes);
+      const returnedBounds = returnedShapesWithBounds
+        .map(({ bounds }) => boundsToJson(bounds))
+        .filter((bounds): bounds is CanvasBounds => bounds !== undefined);
 
-          return {
-            id: shape.id,
-            type: shape.type,
-            x: shape.x,
-            y: shape.y,
-            rotation: shape.rotation,
-            parentId: shape.parentId,
-            index: shape.index,
-            opacity: shape.opacity,
-            isLocked: shape.isLocked,
-            props,
-            ...(text ? { text } : {}),
-            ...(bounds ? { pageBounds: boundsToJson(bounds) } : {}),
-            ...(isRecord(shape.meta) && Object.keys(shape.meta).length > 0
-              ? { meta: shape.meta }
-              : {}),
-          };
-        });
+      const shapes: CanvasShapeSummary[] = returnedShapesWithBounds.map(({ shape, bounds }) => {
+        const props = isRecord(shape.props) ? { ...shape.props } : {};
+        const text = plainTextFromRichText(props.richText);
+        delete props.richText;
 
-      return {
+        return {
+          id: shape.id,
+          type: shape.type,
+          x: shape.x,
+          y: shape.y,
+          rotation: shape.rotation,
+          parentId: shape.parentId,
+          index: shape.index,
+          opacity: shape.opacity,
+          isLocked: shape.isLocked,
+          props,
+          ...(text ? { text } : {}),
+          ...(bounds ? { pageBounds: boundsToJson(bounds) } : {}),
+          ...(isRecord(shape.meta) && Object.keys(shape.meta).length > 0
+            ? { meta: shape.meta }
+            : {}),
+        };
+      });
+
+      return renderCanvasImage(
+        scope,
+        returnedShapesWithBounds.map(({ shape }) => shape.id),
+        boundsToJson(viewport)!,
+        returnedBounds,
+      ).then((image) => ({
         scope,
         page: { id: page.id, name: page.name },
         camera: editor.getCamera(),
@@ -162,7 +245,8 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         returnedShapeCount: shapes.length,
         truncated: shapesWithBounds.length > shapes.length,
         shapes,
-      };
+        ...(image ? { image } : {}),
+      }));
     };
 
     const putShapes = (
@@ -192,13 +276,73 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     };
 
     const handler = async (request: CanvasRequest): Promise<CanvasToolResult> => {
-      if (request.action === "get_canvas") return getCanvas(request);
+      if (request.action === "get_canvas") return await getCanvas(request);
       return putShapes(request);
     };
 
     setCanvasRequestHandler(handler);
     return () => setCanvasRequestHandler(null);
   }, [editor, setCanvasRequestHandler]);
+
+  useEffect(() => {
+    const getStatusShapeId = (runId: string): string => `shape:coding-status-${runId}`;
+
+    const ensureStatusOrder = (runId: string): number => {
+      const existingIndex = statusOrderRef.current.indexOf(runId);
+      if (existingIndex !== -1) return existingIndex;
+      statusOrderRef.current = [...statusOrderRef.current, runId];
+      return statusOrderRef.current.length - 1;
+    };
+
+    const statusText = (message: CodingStatusMessage): string => {
+      const state =
+        message.type === "coding_status_end"
+          ? message.isError
+            ? "Coding agent - error"
+            : "Coding agent - done"
+          : "Coding agent";
+      return `${state}\n\n${message.text}`;
+    };
+
+    const upsertStatusShape = (message: CodingStatusMessage): void => {
+      const id = getStatusShapeId(message.runId);
+      const richText = richTextFromPlainText(statusText(message));
+      const existing = editor.getShape(id as never);
+
+      if (existing) {
+        editor.updateShapes([
+          {
+            id,
+            type: "geo",
+            props: { richText },
+          } as never,
+        ]);
+        return;
+      }
+
+      const index = ensureStatusOrder(message.runId);
+      const viewport = editor.getViewportPageBounds();
+      editor.createShapes([
+        {
+          id,
+          type: "geo",
+          x: viewport.x + 32,
+          y: viewport.y + 32 + index * 280,
+          isLocked: true,
+          props: {
+            geo: "rectangle",
+            w: 520,
+            h: 240,
+            richText,
+          },
+          meta: { piet: { kind: "coding-status", runId: message.runId } },
+        } as never,
+      ]);
+    };
+
+    setCodingStatusHandler(upsertStatusShape);
+    return () => setCodingStatusHandler(null);
+  }, [editor, setCodingStatusHandler]);
 
   return null;
 };

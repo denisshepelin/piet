@@ -25,6 +25,12 @@ export type CanvasShapeSummary = {
   meta?: Record<string, unknown>;
 };
 
+export type CanvasSnapshotImage = {
+  mimeType: "image/png";
+  data: string;
+  bounds?: CanvasBounds;
+};
+
 export type GetCanvasParams = {
   scope?: CanvasScope;
   maxShapes?: number;
@@ -41,6 +47,7 @@ export type CanvasSnapshot = {
   returnedShapeCount: number;
   truncated: boolean;
   shapes: CanvasShapeSummary[];
+  image?: CanvasSnapshotImage;
 };
 
 export type PutCanvasShape = {
@@ -78,6 +85,11 @@ export type CanvasResponse =
   | { type: "canvas_response"; requestId: string; ok: true; result: CanvasToolResult }
   | { type: "canvas_response"; requestId: string; ok: false; error: string };
 
+export type CodingStatusMessage =
+  | { type: "coding_status_start"; runId: string; title: string; text: string }
+  | { type: "coding_status_update"; runId: string; text: string }
+  | { type: "coding_status_end"; runId: string; text: string; isError: boolean };
+
 export type ClientMessage =
   | { type: "prompt"; id: string; text: string }
   | { type: "set_model"; provider: string; modelId: string }
@@ -104,8 +116,16 @@ export type ServerMessage =
   | { type: "text_delta"; promptId: string; delta: string }
   | { type: "thinking_delta"; promptId: string; delta: string }
   | { type: "tool_start"; promptId: string; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool_end"; promptId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean }
+  | {
+      type: "tool_end";
+      promptId: string;
+      toolCallId: string;
+      toolName: string;
+      result: unknown;
+      isError: boolean;
+    }
   | { type: "prompt_done"; promptId: string }
+  | CodingStatusMessage
   | CanvasRequest
   | { type: "error"; promptId?: string; message: string }
   | { type: "pong" };
