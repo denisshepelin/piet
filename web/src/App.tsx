@@ -12,7 +12,10 @@ export const App = (): ReactElement => {
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
       <Tldraw>
-        <TldrawAgentBridge setCanvasRequestHandler={chat.setCanvasRequestHandler} />
+        <TldrawAgentBridge
+          setCanvasRequestHandler={chat.setCanvasRequestHandler}
+          setCodingStatusHandler={chat.setCodingStatusHandler}
+        />
         <ChatSidebar chat={chat} />
       </Tldraw>
     </div>
