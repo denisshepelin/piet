@@ -129,8 +129,42 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <strong>pi</strong>
+          <strong>pi pairs</strong>
           <span style={{ color: statusColor, fontSize: 12 }}>● {status}</span>
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: chat.activePair?.actor.color ?? "#9ca3af",
+            }}
+          />
+          <select
+            value={chat.activePairId ?? ""}
+            onChange={(e) => chat.selectPair(e.target.value)}
+            disabled={!chat.ready || chat.pairs.length === 0}
+            style={selectStyle}
+          >
+            {chat.pairs.map((pair) => (
+              <option key={pair.id} value={pair.id}>
+                {pair.actor.name}
+                {pair.busy ? " (working)" : ""}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={chat.createPair} disabled={!chat.ready} title="New pair">
+            new
+          </button>
+          <button
+            type="button"
+            onClick={() => chat.activePairId && chat.removePair(chat.activePairId)}
+            disabled={!chat.ready || chat.pairs.length <= 1 || chat.busy}
+            title="Remove pair"
+          >
+            remove
+          </button>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>canvas</label>

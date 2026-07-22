@@ -97,6 +97,49 @@ export type PutMermaidParams = {
   y?: number;
 };
 
+export type CanvasPoint = {
+  x: number;
+  y: number;
+  pressure?: number;
+};
+
+export type PutImageParams = {
+  src: string;
+  name?: string;
+  mimeType?: string;
+  altText?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+};
+
+export type PutStrokeParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+  dash?: string;
+  fill?: string;
+  isClosed?: boolean;
+};
+
+export type PutHighlightParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+};
+
+export type PutLineParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+  dash?: string;
+  spline?: "line" | "cubic";
+};
+
 export type DeleteShapesParams = {
   ids: string[];
 };
@@ -138,6 +181,17 @@ export type PutMermaidResult = {
   lints?: CanvasLint[];
 };
 
+export type PutImageResult = {
+  createdShapeId: string;
+  createdAssetId?: string;
+};
+
+export type PutPathResult = {
+  shapeId: string;
+  pointCount: number;
+  appended: boolean;
+};
+
 export type UpdateShapeResult = {
   updatedShapeId: string;
   skippedBindings?: SkippedArrowBinding[];
@@ -164,35 +218,114 @@ export type CanvasToolResult =
   | CanvasSnapshot
   | PutShapeResult
   | PutMermaidResult
+  | PutImageResult
+  | PutPathResult
   | UpdateShapeResult
   | DeleteShapesResult
   | MoveShapesResult
   | SetViewResult;
 
+export type CanvasActor = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+export type AgentPairSummary = {
+  id: string;
+  actor: CanvasActor;
+  busy: boolean;
+};
+
 export type CanvasRequestParams = CanvasRequest["params"];
 
 export type CanvasRequest =
-  | { type: "canvas_request"; requestId: string; action: "get_canvas"; params: GetCanvasParams }
-  | { type: "canvas_request"; requestId: string; action: "put_shape"; params: PutShapeParams }
-  | { type: "canvas_request"; requestId: string; action: "put_mermaid"; params: PutMermaidParams }
-  | { type: "canvas_request"; requestId: string; action: "update_shape"; params: UpdateShapeParams }
   | {
       type: "canvas_request";
       requestId: string;
+      actor: CanvasActor;
+      action: "get_canvas";
+      params: GetCanvasParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_shape";
+      params: PutShapeParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_mermaid";
+      params: PutMermaidParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_image";
+      params: PutImageParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_draw";
+      params: PutStrokeParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_highlight";
+      params: PutHighlightParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_line";
+      params: PutLineParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "update_shape";
+      params: UpdateShapeParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
       action: "delete_shapes";
       params: DeleteShapesParams;
     }
-  | { type: "canvas_request"; requestId: string; action: "move_shapes"; params: MoveShapesParams }
-  | { type: "canvas_request"; requestId: string; action: "set_view"; params: SetViewParams };
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "move_shapes";
+      params: MoveShapesParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "set_view";
+      params: SetViewParams;
+    };
 
 export type CanvasResponse =
   | { type: "canvas_response"; requestId: string; ok: true; result: CanvasToolResult }
   | { type: "canvas_response"; requestId: string; ok: false; error: string };
 
 export type CodingStatusMessage =
-  | { type: "coding_status_start"; runId: string; title: string; text: string }
-  | { type: "coding_status_update"; runId: string; text: string }
-  | { type: "coding_status_end"; runId: string; text: string; isError: boolean };
+  | { type: "coding_status_start"; pairId: string; runId: string; title: string; text: string }
+  | { type: "coding_status_update"; pairId: string; runId: string; text: string }
+  | { type: "coding_status_end"; pairId: string; runId: string; text: string; isError: boolean };
 
 export type ClientLogEvent = {
   ts: string;
@@ -202,27 +335,27 @@ export type ClientLogEvent = {
 };
 
 export type ClientMessage =
-  | { type: "prompt"; id: string; text: string }
-  | { type: "set_canvas_model"; provider: string; modelId: string }
-  | { type: "set_coding_model"; provider: string; modelId: string }
-  | { type: "set_model"; provider: string; modelId: string }
-  | { type: "set_thinking"; level: ModelThinkingLevel }
-  | { type: "set_canvas_thinking"; level: ModelThinkingLevel }
-  | { type: "set_coding_thinking"; level: ModelThinkingLevel }
+  | { type: "create_pair"; name?: string }
+  | { type: "remove_pair"; pairId: string }
+  | { type: "prompt"; pairId: string; id: string; text: string }
+  | { type: "set_canvas_model"; pairId: string; provider: string; modelId: string }
+  | { type: "set_coding_model"; pairId: string; provider: string; modelId: string }
+  | { type: "set_canvas_thinking"; pairId: string; level: ModelThinkingLevel }
+  | { type: "set_coding_thinking"; pairId: string; level: ModelThinkingLevel }
   | { type: "client_log"; events: ClientLogEvent[] }
   | CanvasResponse
   | { type: "ping" };
 
 export type ServerMessage =
   | { type: "ready" }
+  | { type: "pair_created"; pair: AgentPairSummary }
+  | { type: "pair_removed"; pairId: string }
   | {
       type: "models";
+      pairId: string;
       available: Model<Api>[];
-      current: Pick<Model<Api>, "provider" | "id"> | null;
       canvasCurrent: Pick<Model<Api>, "provider" | "id"> | null;
       codingCurrent: Pick<Model<Api>, "provider" | "id"> | null;
-      thinkingLevel: ModelThinkingLevel;
-      availableThinkingLevels: ModelThinkingLevel[];
       canvasThinkingLevel: ModelThinkingLevel;
       canvasAvailableThinkingLevels: ModelThinkingLevel[];
       codingThinkingLevel: ModelThinkingLevel;
@@ -230,12 +363,10 @@ export type ServerMessage =
     }
   | {
       type: "model_changed";
-      current: Pick<Model<Api>, "provider" | "id"> | null;
+      pairId: string;
       canvasCurrent: Pick<Model<Api>, "provider" | "id"> | null;
       codingCurrent: Pick<Model<Api>, "provider" | "id"> | null;
       changed: "canvas" | "coding";
-      thinkingLevel: ModelThinkingLevel;
-      availableThinkingLevels: ModelThinkingLevel[];
       canvasThinkingLevel: ModelThinkingLevel;
       canvasAvailableThinkingLevels: ModelThinkingLevel[];
       codingThinkingLevel: ModelThinkingLevel;
@@ -243,26 +374,34 @@ export type ServerMessage =
     }
   | {
       type: "thinking_changed";
-      level: ModelThinkingLevel;
+      pairId: string;
       canvasThinkingLevel: ModelThinkingLevel;
       canvasAvailableThinkingLevels: ModelThinkingLevel[];
       codingThinkingLevel: ModelThinkingLevel;
       codingAvailableThinkingLevels: ModelThinkingLevel[];
       changed: "canvas" | "coding";
     }
-  | { type: "text_delta"; promptId: string; delta: string }
-  | { type: "thinking_delta"; promptId: string; delta: string }
-  | { type: "tool_start"; promptId: string; toolCallId: string; toolName: string; args: unknown }
+  | { type: "text_delta"; pairId: string; promptId: string; delta: string }
+  | { type: "thinking_delta"; pairId: string; promptId: string; delta: string }
+  | {
+      type: "tool_start";
+      pairId: string;
+      promptId: string;
+      toolCallId: string;
+      toolName: string;
+      args: unknown;
+    }
   | {
       type: "tool_end";
+      pairId: string;
       promptId: string;
       toolCallId: string;
       toolName: string;
       result: unknown;
       isError: boolean;
     }
-  | { type: "prompt_done"; promptId: string }
+  | { type: "prompt_done"; pairId: string; promptId: string }
   | CodingStatusMessage
   | CanvasRequest
-  | { type: "error"; promptId?: string; message: string }
+  | { type: "error"; pairId?: string; promptId?: string; message: string }
   | { type: "pong" };

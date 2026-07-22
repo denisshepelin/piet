@@ -36,14 +36,18 @@ const summarizeToolUse = (toolName: string, args: unknown): string => {
   return truncateStep(toolName);
 };
 
-export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: SendStatus) => {
+export const createCodingAgentTool = (
+  pairId: string,
+  codingSession: AgentSession,
+  sendStatus: SendStatus,
+) => {
   let activeRun: ActiveCodingRun | null = null;
   let queue = Promise.resolve();
 
   const setSummary = (summary: string): void => {
     if (!activeRun || activeRun.summary === summary) return;
     activeRun.summary = summary;
-    sendStatus({ type: "coding_status_update", runId: activeRun.runId, text: summary });
+    sendStatus({ type: "coding_status_update", pairId, runId: activeRun.runId, text: summary });
   };
 
   const unsubscribe = codingSession.subscribe((event) => {
@@ -81,6 +85,7 @@ export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: S
     activeRun = run;
     sendStatus({
       type: "coding_status_start",
+      pairId,
       runId,
       title: "coding agent",
       text: run.summary,
@@ -94,12 +99,13 @@ export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: S
     try {
       await codingSession.prompt(task);
       const result = run.assistantText.trim() || "Coding agent completed without a text result.";
-      sendStatus({ type: "coding_status_end", runId, text: "done", isError: false });
+      sendStatus({ type: "coding_status_end", pairId, runId, text: "done", isError: false });
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       sendStatus({
         type: "coding_status_end",
+        pairId,
         runId,
         text: truncateStep(`failed: ${message}`),
         isError: true,
