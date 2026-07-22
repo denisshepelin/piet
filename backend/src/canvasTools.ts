@@ -19,6 +19,8 @@ import type {
   GetCanvasParams,
   MoveShapesResult,
   PutCanvasShape,
+  PutImageResult,
+  PutPathResult,
   PutMermaidResult,
   PutShapeResult,
   SetViewResult,
@@ -83,6 +85,45 @@ const boundsParams = Type.Object({
   h: Type.Number(),
 });
 
+const canvasPointParams = Type.Object({
+  x: Type.Number({ description: "Page-space x coordinate." }),
+  y: Type.Number({ description: "Page-space y coordinate." }),
+  pressure: Type.Optional(
+    Type.Number({ minimum: 0, maximum: 1, description: "Optional pen pressure, 0-1." }),
+  ),
+});
+
+const VALID_COLOR_VALUES = [
+  "black",
+  "grey",
+  "light-violet",
+  "violet",
+  "blue",
+  "light-blue",
+  "yellow",
+  "orange",
+  "green",
+  "light-green",
+  "light-red",
+  "red",
+  "white",
+] as const;
+const colorParams = Type.Optional(
+  Type.Union([...VALID_COLOR_VALUES.map((color) => Type.Literal(color))]),
+);
+const sizeParams = Type.Optional(
+  Type.Union([Type.Literal("s"), Type.Literal("m"), Type.Literal("l"), Type.Literal("xl")]),
+);
+const dashParams = Type.Optional(
+  Type.Union([
+    Type.Literal("draw"),
+    Type.Literal("solid"),
+    Type.Literal("dashed"),
+    Type.Literal("dotted"),
+    Type.Literal("none"),
+  ]),
+);
+
 const normalizeScope = (scope: string | undefined): CanvasScope => {
   if (scope === "page" || scope === "selection") return scope;
   return "viewport";
@@ -98,29 +139,24 @@ const normalizeMaxShapes = (maxShapes: number | undefined): number => {
   return Math.max(1, Math.min(MAX_SHAPES_LIMIT, Math.floor(maxShapes)));
 };
 
-const VALID_COLORS = new Set([
-  "black",
-  "grey",
-  "light-violet",
-  "violet",
-  "blue",
-  "light-blue",
-  "yellow",
-  "orange",
-  "green",
-  "light-green",
-  "light-red",
-  "red",
-  "white",
-]);
+const VALID_COLORS = new Set<string>(VALID_COLOR_VALUES);
 const VALID_FILLS = new Set(["none", "semi", "solid", "pattern", "fill"]);
 const NUMERIC_SHAPE_FIELDS = ["x", "y", "rotation", "opacity"] as const;
 const NUMERIC_PROP_KEYS = new Set(["w", "h", "scale", "growY", "bend", "labelPosition"]);
+const BOOLEAN_PROP_KEYS = new Set(["autoSize", "isClosed"]);
 
 const asNumber = (value: unknown): number | undefined => {
   if (typeof value !== "string" || value.trim() === "") return undefined;
   const num = Number(value);
   return Number.isFinite(num) ? num : undefined;
+};
+
+const asBoolean = (value: unknown): boolean | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return undefined;
 };
 
 const sizeFromFontSize = (fontSize: number): string => {
@@ -132,7 +168,9 @@ const sizeFromFontSize = (fontSize: number): string => {
 
 // Accept what the model plausibly emits and normalize it, reporting each fix
 // back as a tip so the model converges on canonical input.
-const normalizeShape = (input: PutCanvasShape): { shape: PutCanvasShape; tips: string[] } => {
+export const normalizeShape = (
+  input: PutCanvasShape,
+): { shape: PutCanvasShape; tips: string[] } => {
   const tips = new Set<string>();
   const shape: Record<string, unknown> = { ...input };
 
@@ -168,6 +206,14 @@ const normalizeShape = (input: PutCanvasShape): { shape: PutCanvasShape; tips: s
     if (coerced !== undefined) {
       props[key] = coerced;
       tips.add(`props.${key} must be a JSON number, not a string; it was coerced.`);
+    }
+  }
+
+  for (const key of BOOLEAN_PROP_KEYS) {
+    const coerced = asBoolean(props[key]);
+    if (coerced !== undefined) {
+      props[key] = coerced;
+      tips.add(`props.${key} must be a JSON boolean, not a string; it was coerced.`);
     }
   }
 
@@ -337,7 +383,7 @@ export const createCanvasTools = (broker: CanvasBroker, actor: CanvasActor) => {
       "Create ONE tldraw shape on the current page. Call once per shape, in drawing order: creation order is z-order, so place background zones first, then boxes with labels, then arrows, then annotations. Coordinates are page-space. For labels/content, pass text; for geometry use type 'geo' and props like { geo: 'rectangle', w: 200, h: 100, fill: 'solid', color: 'blue' }. For arrows connecting shapes, bind with startShapeId/endShapeId (create the boxes first, then the arrow). Results may include Tip: lines when input was auto-corrected — follow them next time.",
     promptSnippet: "Create one tldraw shape on the current canvas/page.",
     promptGuidelines: [
-      "Use put_shape to add or sketch content on the tldraw canvas when the user asks to modify the drawing. One shape per call — build scenes shape by shape in drawing order instead of planning the whole scene at once.",
+      "Use put_shape for geo, text, note, arrow, and frame shapes. Use the dedicated image, draw, highlight, and line tools for those native shape types.",
       "Call get_selection first when editing selected objects; call get_canvas when you need broader context or the visible viewport center.",
       "Creation order is z-order: place zones first, then boxes with labels, then arrows, then annotations.",
       "Bind connecting arrows with startShapeId/endShapeId referencing shapes created in earlier calls; bound arrows route to shape edges and follow moved shapes.",
@@ -409,6 +455,153 @@ export const createCanvasTools = (broker: CanvasBroker, actor: CanvasActor) => {
 
       return {
         content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  const putImageTool = defineTool({
+    name: "put_image",
+    label: "Put Image",
+    description:
+      "Add a raster or SVG image as a native tldraw image shape. The browser imports and persists the source through tldraw's asset pipeline. src must be a data URL or a browser-fetchable http(s) URL. x/y set the bounds' top-left and w/h set its displayed size.",
+    promptSnippet: "Add an image to the tldraw canvas from a data URL or fetchable URL.",
+    promptGuidelines: [
+      "Use a data URL for generated SVG or image data; use an http(s) URL only when the browser can fetch it with CORS enabled.",
+      "Provide concise altText that describes the image's meaning, not its visual styling.",
+      "After insertion, inspect with get_canvas and move or resize the resulting image shape with update_shape if needed.",
+    ],
+    parameters: Type.Object({
+      src: Type.String({ description: "Image data URL or browser-fetchable http(s) URL." }),
+      name: Type.Optional(Type.String({ description: "Filename used for the persisted asset." })),
+      mimeType: Type.Optional(
+        Type.String({ description: "Image MIME type when src does not provide one." }),
+      ),
+      altText: Type.Optional(Type.String({ description: "Accessible image description." })),
+      x: Type.Optional(Type.Number({ description: "Page-space bounds left." })),
+      y: Type.Optional(Type.Number({ description: "Page-space bounds top." })),
+      w: Type.Optional(Type.Number({ minimum: 1, description: "Displayed width." })),
+      h: Type.Optional(Type.Number({ minimum: 1, description: "Displayed height." })),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const result = await requestCanvas<PutImageResult>("put_image", params, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created image shape ${result.createdShapeId}${result.createdAssetId ? ` with asset ${result.createdAssetId}` : ""}`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  const putDrawTool = defineTool({
+    name: "put_draw",
+    label: "Put Draw",
+    description:
+      "Create a native editable tldraw freehand drawing from page-space points, or append a new stroke segment to an existing draw shape by passing id. Point encoding is handled for you. Style fields apply when creating a new shape.",
+    promptSnippet: "Draw or append a freehand stroke from page-space points.",
+    promptGuidelines: [
+      "Pass points in drawing order with at least two distinct points; add pressure only when varying stroke width is intentional.",
+      "Reuse id to append a disconnected segment to the same draw shape; omit id or use a new id for a separate drawing.",
+      "Use put_line for precise straight or curved polylines and put_highlight for translucent emphasis strokes.",
+    ],
+    parameters: Type.Object({
+      id: Type.Optional(
+        Type.String({ description: "Existing draw shape id to append to, or a new stable id." }),
+      ),
+      points: Type.Array(canvasPointParams, { minItems: 2 }),
+      color: colorParams,
+      size: sizeParams,
+      dash: dashParams,
+      fill: Type.Optional(
+        Type.Union([
+          Type.Literal("none"),
+          Type.Literal("semi"),
+          Type.Literal("solid"),
+          Type.Literal("pattern"),
+          Type.Literal("fill"),
+        ]),
+      ),
+      isClosed: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const result = await requestCanvas<PutPathResult>("put_draw", params, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${result.appended ? "Appended to" : "Created"} draw shape ${result.shapeId} with ${result.pointCount} points`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  const putHighlightTool = defineTool({
+    name: "put_highlight",
+    label: "Put Highlight",
+    description:
+      "Create a native editable tldraw highlight stroke from page-space points, or append a segment to an existing highlight shape by passing id. Point encoding is handled for you.",
+    promptSnippet: "Add or append a highlight stroke from page-space points.",
+    promptGuidelines: [
+      "Use highlight for translucent emphasis over existing canvas content, not for opaque freehand marks.",
+      "Pass points in drawing order; reuse id only when multiple highlight segments should remain one selectable shape.",
+    ],
+    parameters: Type.Object({
+      id: Type.Optional(
+        Type.String({
+          description: "Existing highlight shape id to append to, or a new stable id.",
+        }),
+      ),
+      points: Type.Array(canvasPointParams, { minItems: 2 }),
+      color: colorParams,
+      size: sizeParams,
+    }),
+    async execute(_toolCallId, params, signal) {
+      const result = await requestCanvas<PutPathResult>("put_highlight", params, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${result.appended ? "Appended to" : "Created"} highlight shape ${result.shapeId} with ${result.pointCount} points`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  const putLineTool = defineTool({
+    name: "put_line",
+    label: "Put Line",
+    description:
+      "Create a native editable tldraw multi-point line from page-space points. Use spline 'line' for straight segments or 'cubic' for a smooth path. For semantic connections between shapes, use bound arrows instead.",
+    promptSnippet: "Create a native straight or curved multi-point tldraw line.",
+    promptGuidelines: [
+      "Use put_line for decorative or geometric paths without arrowheads; keep semantic connections as arrows with bindings.",
+      "Pass points in path order with at least two distinct page-space points.",
+    ],
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ description: "Optional stable line shape id." })),
+      points: Type.Array(canvasPointParams, { minItems: 2 }),
+      color: colorParams,
+      size: sizeParams,
+      dash: dashParams,
+      spline: Type.Optional(Type.Union([Type.Literal("line"), Type.Literal("cubic")])),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const result = await requestCanvas<PutPathResult>("put_line", params, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created line shape ${result.shapeId} with ${result.pointCount} points`,
+          },
+        ],
         details: result,
       };
     },
@@ -572,6 +765,10 @@ export const createCanvasTools = (broker: CanvasBroker, actor: CanvasActor) => {
       getSelectionTool,
       putShapeTool,
       putMermaidTool,
+      putImageTool,
+      putDrawTool,
+      putHighlightTool,
+      putLineTool,
       updateShapeTool,
       deleteShapesTool,
       moveShapesTool,

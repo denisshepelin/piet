@@ -1,8 +1,17 @@
 import { useEffect, type ReactElement } from "react";
-import { Box, useEditor, type Editor, type TLImageExportOptions } from "tldraw";
+import {
+  Box,
+  b64Vecs,
+  getIndices,
+  useEditor,
+  type Editor,
+  type TLDrawShapeSegment,
+  type TLImageExportOptions,
+} from "tldraw";
 import type {
   CanvasBounds,
   CanvasActor,
+  CanvasPoint,
   CanvasRequest,
   CanvasScope,
   CanvasSnapshotImage,
@@ -11,6 +20,8 @@ import type {
   DeleteShapesResult,
   MoveShapesResult,
   PutCanvasShape,
+  PutImageResult,
+  PutPathResult,
   PutMermaidResult,
   PutShapeResult,
   SetViewResult,
@@ -186,6 +197,39 @@ const prepareShape = (
   return shape;
 };
 
+const encodeStrokeSegment = (
+  points: CanvasPoint[],
+  toLocalPoint: (point: CanvasPoint) => { x: number; y: number },
+): TLDrawShapeSegment => {
+  const hasPressure = points.some((point) => point.pressure !== undefined);
+  const dim = hasPressure ? 3 : 2;
+  const localPoints = points.map((point) => ({
+    ...toLocalPoint(point),
+    z: point.pressure ?? 0.5,
+  }));
+  return {
+    type: "free",
+    path: b64Vecs.encodePoints(localPoints, dim),
+    dim,
+  };
+};
+
+const imageFileName = (src: string, requested: string | undefined): string => {
+  if (requested?.trim()) return requested.trim();
+  if (src.startsWith("data:")) return "piet-image";
+  try {
+    const name = new URL(src).pathname.split("/").filter(Boolean).at(-1);
+    return name || "piet-image";
+  } catch {
+    return "piet-image";
+  }
+};
+
+const hasDistinctPoints = (points: CanvasPoint[]): boolean => {
+  const first = points[0];
+  return first !== undefined && points.some((point) => point.x !== first.x || point.y !== first.y);
+};
+
 export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElement | null => {
   const editor = useEditor();
 
@@ -355,6 +399,175 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       };
     };
 
+    const putImage = async (
+      request: Extract<CanvasRequest, { action: "put_image" }>,
+    ): Promise<PutImageResult> => {
+      const { src, name, mimeType, altText, x, y, w, h } = request.params;
+      if (!src.startsWith("data:image/") && !/^https?:\/\//i.test(src)) {
+        throw new Error("image src must be an image data URL or an http(s) URL");
+      }
+
+      const response = await fetch(src);
+      if (!response.ok) {
+        throw new Error(`could not fetch image (${response.status} ${response.statusText})`);
+      }
+      const blob = await response.blob();
+      const resolvedMimeType = mimeType?.trim() || blob.type;
+      if (!resolvedMimeType.startsWith("image/")) {
+        throw new Error(`image MIME type is required; received '${resolvedMimeType || "unknown"}'`);
+      }
+
+      const before = new Set(editor.getCurrentPageShapes().map(({ id }) => id));
+      await editor.putExternalContent({
+        type: "files",
+        files: [new File([blob], imageFileName(src, name), { type: resolvedMimeType })],
+        point: editor.getViewportPageBounds().center,
+      });
+
+      const created = editor
+        .getCurrentPageShapes()
+        .filter((shape) => !before.has(shape.id) && shape.type === "image");
+      if (created.length !== 1) {
+        throw new Error(`expected one image shape, but tldraw created ${created.length}`);
+      }
+
+      const shape = created[0]!;
+      const bounds = editor.getShapePageBounds(shape);
+      const offset = getOrigin();
+      const partial: Record<string, unknown> = {
+        id: shape.id,
+        type: shape.type,
+        meta: withActorMeta(shape.meta, request.actor),
+      };
+      if (x !== undefined || y !== undefined) {
+        if (!bounds) throw new Error("created image has no bounds");
+        partial.x = shape.x + (x !== undefined ? x + offset.x - bounds.x : 0);
+        partial.y = shape.y + (y !== undefined ? y + offset.y - bounds.y : 0);
+      }
+      if (altText !== undefined || w !== undefined || h !== undefined) {
+        partial.props = {
+          ...(altText !== undefined ? { altText } : {}),
+          ...(w !== undefined ? { w } : {}),
+          ...(h !== undefined ? { h } : {}),
+        };
+      }
+      editor.updateShapes([partial as never]);
+
+      const assetId = (shape.props as { assetId?: unknown }).assetId;
+      return {
+        createdShapeId: shape.id,
+        ...(typeof assetId === "string" ? { createdAssetId: assetId } : {}),
+      };
+    };
+
+    const putStroke = (
+      request: Extract<CanvasRequest, { action: "put_draw" | "put_highlight" }>,
+    ): PutPathResult => {
+      const type = request.action === "put_draw" ? "draw" : "highlight";
+      const { points } = request.params;
+      if (points.length < 2) throw new Error(`${type} requires at least two points`);
+      if (!hasDistinctPoints(points)) throw new Error(`${type} requires two distinct points`);
+
+      const id = normalizeShapeId(request.params.id);
+      const existing = editor.getShape(id as never);
+      if (existing && existing.type !== type) {
+        throw new Error(`shape ${id} is '${existing.type}', not '${type}'`);
+      }
+
+      if (existing) {
+        const props = existing.props as { segments: TLDrawShapeSegment[] };
+        const segment = encodeStrokeSegment(points, (point) =>
+          editor.getPointInShapeSpace(existing, {
+            x: point.x + getOrigin().x,
+            y: point.y + getOrigin().y,
+          }),
+        );
+        editor.updateShapes([
+          {
+            id,
+            type,
+            props: { segments: [...props.segments, segment] },
+            meta: withActorMeta(existing.meta, request.actor),
+          } as never,
+        ]);
+        return { shapeId: id, pointCount: points.length, appended: true };
+      }
+
+      const offset = getOrigin();
+      const strokeOrigin = { x: points[0]!.x + offset.x, y: points[0]!.y + offset.y };
+      const segment = encodeStrokeSegment(points, (point) => ({
+        x: point.x + offset.x - strokeOrigin.x,
+        y: point.y + offset.y - strokeOrigin.y,
+      }));
+      const style = request.params;
+      const props: Record<string, unknown> = {
+        segments: [segment],
+        isComplete: true,
+        isPen: points.some((point) => point.pressure !== undefined),
+      };
+      if (style.color !== undefined) props.color = style.color;
+      if (style.size !== undefined) props.size = style.size;
+      if (type === "draw") {
+        if ("dash" in style && style.dash !== undefined) props.dash = style.dash;
+        if ("fill" in style && style.fill !== undefined) props.fill = style.fill;
+        props.isClosed = "isClosed" in style ? (style.isClosed ?? false) : false;
+      }
+
+      editor.createShape({
+        id: id as never,
+        type,
+        x: strokeOrigin.x,
+        y: strokeOrigin.y,
+        props,
+        meta: withActorMeta({}, request.actor),
+      } as never);
+      if (!editor.getShape(id as never)) throw new Error(`${type} shape was rejected by tldraw`);
+      return { shapeId: id, pointCount: points.length, appended: false };
+    };
+
+    const putLine = (request: Extract<CanvasRequest, { action: "put_line" }>): PutPathResult => {
+      const { points, color, size, dash, spline } = request.params;
+      if (points.length < 2) throw new Error("line requires at least two points");
+      if (!hasDistinctPoints(points)) throw new Error("line requires two distinct points");
+
+      const id = normalizeShapeId(request.params.id);
+      if (editor.getShape(id as never)) throw new Error(`shape ${id} already exists`);
+
+      const offset = getOrigin();
+      const lineOrigin = { x: points[0]!.x + offset.x, y: points[0]!.y + offset.y };
+      const indices = getIndices(points.length - 1);
+      const linePoints = Object.fromEntries(
+        points.map((point, index) => {
+          const pointId = `p${index}`;
+          return [
+            pointId,
+            {
+              id: pointId,
+              index: indices[index]!,
+              x: point.x + offset.x - lineOrigin.x,
+              y: point.y + offset.y - lineOrigin.y,
+            },
+          ];
+        }),
+      );
+      editor.createShape({
+        id: id as never,
+        type: "line",
+        x: lineOrigin.x,
+        y: lineOrigin.y,
+        props: {
+          points: linePoints,
+          ...(color !== undefined ? { color } : {}),
+          ...(size !== undefined ? { size } : {}),
+          ...(dash !== undefined ? { dash } : {}),
+          ...(spline !== undefined ? { spline } : {}),
+        },
+        meta: withActorMeta({}, request.actor),
+      } as never);
+      if (!editor.getShape(id as never)) throw new Error("line shape was rejected by tldraw");
+      return { shapeId: id, pointCount: points.length, appended: false };
+    };
+
     const updateShape = (
       request: Extract<CanvasRequest, { action: "update_shape" }>,
     ): UpdateShapeResult => {
@@ -516,6 +729,13 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           return putShape(request);
         case "put_mermaid":
           return await putMermaid(request);
+        case "put_image":
+          return await putImage(request);
+        case "put_draw":
+        case "put_highlight":
+          return putStroke(request);
+        case "put_line":
+          return putLine(request);
         case "update_shape":
           return updateShape(request);
         case "delete_shapes":

@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { AgentPairManager } from "./agentPairManager.js";
 import { CanvasBroker } from "./canvasBroker.js";
+import { CANVAS_SYSTEM_PROMPT } from "./canvasPrompt.js";
 import { createEventLog } from "./logger.js";
 import type { ClientMessage, ServerMessage } from "./protocol.js";
 import { startSyncServer } from "./syncServer.js";
@@ -20,16 +21,6 @@ const DEFAULT_CANVAS_MODEL_ID = process.env.CANVAS_MODEL_ID ?? "minimax-m3";
 const DEFAULT_CODING_MODEL_PROVIDER =
   process.env.CODING_MODEL_PROVIDER ?? DEFAULT_CANVAS_MODEL_PROVIDER;
 const DEFAULT_CODING_MODEL_ID = process.env.CODING_MODEL_ID ?? DEFAULT_CANVAS_MODEL_ID;
-
-const CANVAS_SYSTEM_PROMPT = `You are the Piet canvas agent. The user talks to you through a tldraw canvas.
-
-The canvas is the source of truth and the output surface. Gather context with get_selection when the user refers to selected objects, and get_canvas for viewport or page context. Place user-facing results on the canvas. Only you decide and write canvas output.
-
-Delegate repository inspection, edits, commands, experiments, and tests to your paired coding agent with send_message. Include enough canvas context for it to work. The coding agent cannot access or write the canvas.
-
-Prefer put_mermaid for flowcharts, sequence diagrams, state diagrams, and mindmaps. Use put_shape for freeform content and annotations. Create background zones first, then shapes, arrows, and annotations. Bind arrows with startShapeId and endShapeId. Use update_shape, move_shapes, and delete_shapes for corrections. After substantial drawing, inspect it with get_canvas, fix lints or visual problems, and frame the result with set_view.
-
-Use a 20px grid, boxes at least 160x80, 40-80px sibling gaps, and 80-120px between tiers. Use only tldraw named colors and style props. Pass text in the top-level text field and all numbers as JSON numbers. Keep the chat response to a short completion note after the canvas result is ready.`;
 
 const CODING_SYSTEM_APPENDIX = `You are the Piet coding agent. You receive tasks from one paired canvas agent.
 
