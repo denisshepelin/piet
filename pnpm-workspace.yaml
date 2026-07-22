@@ -1,10 +1,10 @@
 packages:
   - web
   - backend
-# tldraw 5.2.x imports @tldraw/state without declaring it as a dependency;
-# hoist it into .pnpm/node_modules so the import resolves.
+# tldraw 5.2.x packages use sibling @tldraw imports that strict bundlers resolve
+# from the virtual store root.
 hoistPattern:
-  - "@tldraw/state"
+  - "@tldraw/*"
 allowBuilds:
   "@google/genai": true
   esbuild: true
