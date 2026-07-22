@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 import { ChatSidebar } from "./ChatSidebar.tsx";
+import { CodingStatusPanel } from "./CodingStatusPanel.tsx";
 import { TldrawAgentBridge } from "./TldrawAgentBridge.tsx";
 import { useAgentSocket } from "./useAgentSocket.ts";
 
@@ -12,12 +13,10 @@ export const App = (): ReactElement => {
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
       <Tldraw>
-        <TldrawAgentBridge
-          setCanvasRequestHandler={chat.setCanvasRequestHandler}
-          setCodingStatusHandler={chat.setCodingStatusHandler}
-        />
+        <TldrawAgentBridge setCanvasRequestHandler={chat.setCanvasRequestHandler} />
         <ChatSidebar chat={chat} />
       </Tldraw>
+      <CodingStatusPanel runs={chat.codingRuns} />
     </div>
   );
 };

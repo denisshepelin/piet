@@ -3,86 +3,47 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ServerMessage } from "./protocol.js";
 
-const STATUS_TOKEN_LIMIT = 450;
-const STATUS_EMIT_INTERVAL_MS = 120;
-const TOOL_VALUE_LIMIT = 500;
+const MAX_STEP_LENGTH = 64;
 
 type SendStatus = (msg: ServerMessage) => void;
 
 type ActiveCodingRun = {
   runId: string;
-  task: string;
   assistantText: string;
-  log: string;
-  emitUpdate: () => void;
-  flushUpdate: () => void;
-  dispose: () => void;
+  summary: string;
 };
 
-const takeLastTokens = (text: string, maxTokens: number): string => {
-  const tokens = text.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length <= maxTokens) return text.trim();
-  return `[...]\n${tokens.slice(-maxTokens).join(" ")}`;
+const truncateStep = (text: string): string =>
+  text.length <= MAX_STEP_LENGTH ? text : `${text.slice(0, MAX_STEP_LENGTH - 1)}…`;
+
+const argString = (args: unknown, key: string): string | undefined => {
+  if (typeof args !== "object" || args === null) return undefined;
+  const value = (args as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
 };
 
-const stringifyBrief = (value: unknown): string => {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (text === undefined) return "";
-  return text.length > TOOL_VALUE_LIMIT ? `${text.slice(0, TOOL_VALUE_LIMIT)}...` : text;
-};
-
-const formatStatus = (run: ActiveCodingRun): string =>
-  takeLastTokens(`Task: ${run.task}\n\n${run.log}`, STATUS_TOKEN_LIMIT);
-
-const createActiveRun = (runId: string, task: string, sendStatus: SendStatus): ActiveCodingRun => {
-  let pendingTimer: NodeJS.Timeout | null = null;
-
-  const run: ActiveCodingRun = {
-    runId,
-    task,
-    assistantText: "",
-    log: "Starting coding agent...",
-    emitUpdate() {
-      if (pendingTimer !== null) return;
-      pendingTimer = setTimeout(() => {
-        pendingTimer = null;
-        sendStatus({
-          type: "coding_status_update",
-          runId,
-          text: formatStatus(run),
-        });
-      }, STATUS_EMIT_INTERVAL_MS);
-    },
-    flushUpdate() {
-      if (pendingTimer !== null) {
-        clearTimeout(pendingTimer);
-        pendingTimer = null;
-      }
-      sendStatus({
-        type: "coding_status_update",
-        runId,
-        text: formatStatus(run),
-      });
-    },
-    dispose() {
-      if (pendingTimer !== null) {
-        clearTimeout(pendingTimer);
-        pendingTimer = null;
-      }
-    },
-  };
-
-  return run;
+const summarizeToolUse = (toolName: string, args: unknown): string => {
+  if (toolName === "bash") {
+    const command = (argString(args, "command") ?? "").replace(/\s+/g, " ").trim();
+    return truncateStep(`$ ${command}`);
+  }
+  if (toolName === "read" || toolName === "edit" || toolName === "write" || toolName === "ls") {
+    return truncateStep(`${toolName} ${argString(args, "path") ?? ""}`.trim());
+  }
+  if (toolName === "grep" || toolName === "find") {
+    return truncateStep(`${toolName} ${argString(args, "pattern") ?? ""}`.trim());
+  }
+  return truncateStep(toolName);
 };
 
 export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: SendStatus) => {
   let activeRun: ActiveCodingRun | null = null;
   let queue = Promise.resolve();
 
-  const appendLog = (text: string): void => {
-    if (!activeRun) return;
-    activeRun.log += text;
-    activeRun.emitUpdate();
+  const setSummary = (summary: string): void => {
+    if (!activeRun || activeRun.summary === summary) return;
+    activeRun.summary = summary;
+    sendStatus({ type: "coding_status_update", runId: activeRun.runId, text: summary });
   };
 
   const unsubscribe = codingSession.subscribe((event) => {
@@ -92,21 +53,20 @@ export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: S
       const ame = event.assistantMessageEvent;
       if (ame.type === "text_delta") {
         activeRun.assistantText += ame.delta;
-        appendLog(ame.delta);
+        setSummary("drafting result…");
       } else if (ame.type === "thinking_delta") {
-        appendLog(ame.delta);
+        setSummary("thinking…");
       }
       return;
     }
 
     if (event.type === "tool_execution_start") {
-      appendLog(`\n\n> ${event.toolName}(${stringifyBrief(event.args)})\n`);
+      setSummary(summarizeToolUse(event.toolName, event.args));
       return;
     }
 
-    if (event.type === "tool_execution_end") {
-      const status = event.isError ? "error" : "ok";
-      appendLog(`\n< ${event.toolName}: ${status} ${stringifyBrief(event.result)}\n`);
+    if (event.type === "tool_execution_end" && event.isError) {
+      setSummary(truncateStep(`${event.toolName} failed`));
     }
   });
 
@@ -117,13 +77,13 @@ export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: S
   ): Promise<string> => {
     if (signal?.aborted) throw new Error("coding task was cancelled");
 
-    const run = createActiveRun(runId, task, sendStatus);
+    const run: ActiveCodingRun = { runId, assistantText: "", summary: "starting…" };
     activeRun = run;
     sendStatus({
       type: "coding_status_start",
       runId,
-      title: "Coding agent",
-      text: formatStatus(run),
+      title: "coding agent",
+      text: run.summary,
     });
 
     const onAbort = (): void => {
@@ -134,29 +94,19 @@ export const createCodingAgentTool = (codingSession: AgentSession, sendStatus: S
     try {
       await codingSession.prompt(task);
       const result = run.assistantText.trim() || "Coding agent completed without a text result.";
-      run.log += `\n\nDone.\n${result}`;
-      run.flushUpdate();
-      sendStatus({
-        type: "coding_status_end",
-        runId,
-        text: formatStatus(run),
-        isError: false,
-      });
+      sendStatus({ type: "coding_status_end", runId, text: "done", isError: false });
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      run.log += `\n\nError: ${message}`;
-      run.flushUpdate();
       sendStatus({
         type: "coding_status_end",
         runId,
-        text: formatStatus(run),
+        text: truncateStep(`failed: ${message}`),
         isError: true,
       });
       throw err;
     } finally {
       signal?.removeEventListener("abort", onAbort);
-      run.dispose();
       activeRun = null;
     }
   };
