@@ -12,6 +12,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.78.0",
     "@tldraw/mermaid": "^5.2.2",
+    "@tldraw/sync": "5.2.2",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tldraw": "^5.2.2"

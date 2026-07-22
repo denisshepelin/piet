@@ -2,6 +2,7 @@ import { useEffect, type ReactElement } from "react";
 import { Box, useEditor, type Editor, type TLImageExportOptions } from "tldraw";
 import type {
   CanvasBounds,
+  CanvasActor,
   CanvasRequest,
   CanvasScope,
   CanvasSnapshotImage,
@@ -96,6 +97,12 @@ const normalizeShapeId = (id: string | undefined): string => {
   return id.startsWith("shape:") ? id : `shape:${id}`;
 };
 
+const withActorMeta = (meta: unknown, actor: CanvasActor): Record<string, unknown> => {
+  const current = isRecord(meta) ? meta : {};
+  const piet = isRecord(current.piet) ? current.piet : {};
+  return { ...current, piet: { ...piet, actor } };
+};
+
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 type ArrowBindingSpec = {
@@ -148,6 +155,7 @@ const applyArrowBindings = (editor: Editor, specs: ArrowBindingSpec[]): SkippedA
 const prepareShape = (
   input: PutCanvasShape,
   viewportCenter: { x: number; y: number },
+  actor: CanvasActor,
 ): Record<string, unknown> => {
   const type = input.type.trim();
   if (type.length === 0) throw new Error("shape type cannot be empty");
@@ -173,7 +181,7 @@ const prepareShape = (
   if (input.rotation !== undefined) shape.rotation = input.rotation;
   if (input.opacity !== undefined) shape.opacity = input.opacity;
   if (input.parentId !== undefined) shape.parentId = input.parentId;
-  if (input.meta !== undefined) shape.meta = input.meta;
+  shape.meta = withActorMeta(input.meta, actor);
 
   return shape;
 };
@@ -300,7 +308,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     const putShape = (request: Extract<CanvasRequest, { action: "put_shape" }>): PutShapeResult => {
       const input = toPageShape(request.params.shape);
       const viewportCenter = editor.getViewportPageBounds().center;
-      const prepared = prepareShape(input, viewportCenter);
+      const prepared = prepareShape(input, viewportCenter, request.actor);
       const id = prepared.id as string;
       const bindingSpecs = input.type.trim() === "arrow" ? arrowBindingSpecs(input, id) : [];
 
@@ -332,6 +340,12 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         x !== undefined && y !== undefined ? { x: x + offset.x, y: y + offset.y } : undefined;
 
       const result = await putMermaidDiagram(editor, source, position);
+      editor.updateShapes(
+        result.createdShapeIds.map((id) => {
+          const shape = editor.getShape(id as never)!;
+          return { id, type: shape.type, meta: withActorMeta(shape.meta, request.actor) };
+        }) as never[],
+      );
 
       return {
         createdShapeIds: result.createdShapeIds,
@@ -374,7 +388,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       if (input.rotation !== undefined) partial.rotation = input.rotation;
       if (input.opacity !== undefined) partial.opacity = input.opacity;
       if (input.parentId !== undefined) partial.parentId = input.parentId;
-      if (input.meta !== undefined) partial.meta = input.meta;
+      partial.meta = withActorMeta({ ...existing.meta, ...(input.meta ?? {}) }, request.actor);
       if (Object.keys(props).length > 0) partial.props = props;
 
       editor.updateShapes([partial as never]);
@@ -448,7 +462,13 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
               ? move.y + offset.y - currentY
               : 0;
 
-        partials.push({ id, type: shape.type, x: shape.x + dx, y: shape.y + dy });
+        partials.push({
+          id,
+          type: shape.type,
+          x: shape.x + dx,
+          y: shape.y + dy,
+          meta: withActorMeta(shape.meta, request.actor),
+        });
         moved.push(id);
       }
 
@@ -488,7 +508,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       };
     };
 
-    const handler = async (request: CanvasRequest): Promise<CanvasToolResult> => {
+    const execute = async (request: CanvasRequest): Promise<CanvasToolResult> => {
       switch (request.action) {
         case "get_canvas":
           return await getCanvas(request);
@@ -505,6 +525,28 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         case "set_view":
           return setView(request);
       }
+    };
+
+    let queue = Promise.resolve();
+    const handler = (request: CanvasRequest): Promise<CanvasToolResult> => {
+      const run = async (): Promise<CanvasToolResult> => {
+        if (request.action === "get_canvas" || request.action === "set_view") {
+          return await execute(request);
+        }
+        const mark = editor.markHistoryStoppingPoint(`piet:${request.actor.id}:${request.action}`);
+        try {
+          return await execute(request);
+        } catch (error) {
+          editor.bailToMark(mark);
+          throw error;
+        }
+      };
+      const result = queue.then(run, run);
+      queue = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
     };
 
     setCanvasRequestHandler(handler);

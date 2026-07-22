@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import {
@@ -8,11 +7,11 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import type { WebSocket } from "ws";
+import type { CanvasBroker } from "./canvasBroker.js";
 import type {
+  CanvasActor,
   CanvasLint,
   CanvasRequest,
-  CanvasResponse,
   CanvasScope,
   CanvasSnapshot,
   CanvasToolResult,
@@ -22,12 +21,10 @@ import type {
   PutCanvasShape,
   PutMermaidResult,
   PutShapeResult,
-  ServerMessage,
   SetViewResult,
   UpdateShapeResult,
 } from "./protocol.js";
 
-const CANVAS_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_SHAPES = 200;
 const MAX_SHAPES_LIMIT = 1_000;
 
@@ -254,73 +251,12 @@ const snapshotImageContent = (snapshot: CanvasSnapshot): ImageContent[] =>
 const lintLines = (lints: CanvasLint[] | undefined): string[] =>
   (lints ?? []).map((lint) => `Lint (${lint.kind}): ${lint.message}`);
 
-const send = (socket: WebSocket, msg: ServerMessage): void => {
-  if (socket.readyState === socket.OPEN) {
-    socket.send(JSON.stringify(msg));
-  }
-};
-
-type PendingCanvasRequest = {
-  resolve: (result: CanvasToolResult) => void;
-  reject: (err: Error) => void;
-  cleanup: () => void;
-};
-
-export const createCanvasTools = (
-  socket: WebSocket,
-  sendMsg: (msg: ServerMessage) => void = (msg) => send(socket, msg),
-) => {
-  const pending = new Map<string, PendingCanvasRequest>();
-
-  const rejectPending = (requestId: string, err: Error): void => {
-    const request = pending.get(requestId);
-    if (!request) return;
-    pending.delete(requestId);
-    request.cleanup();
-    request.reject(err);
-  };
-
+export const createCanvasTools = (broker: CanvasBroker, actor: CanvasActor) => {
   const requestCanvas = <T extends CanvasToolResult>(
     action: CanvasRequest["action"],
     params: CanvasRequest["params"],
     signal: AbortSignal | undefined,
-  ): Promise<T> => {
-    if (socket.readyState !== socket.OPEN) {
-      return Promise.reject(new Error("tldraw client is not connected"));
-    }
-    if (signal?.aborted) {
-      return Promise.reject(new Error("canvas request was cancelled"));
-    }
-
-    const requestId = randomUUID();
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        rejectPending(
-          requestId,
-          new Error(`canvas request timed out after ${CANVAS_REQUEST_TIMEOUT_MS}ms`),
-        );
-      }, CANVAS_REQUEST_TIMEOUT_MS);
-
-      const onAbort = (): void => {
-        rejectPending(requestId, new Error("canvas request was cancelled"));
-      };
-
-      const cleanup = (): void => {
-        clearTimeout(timeout);
-        signal?.removeEventListener("abort", onAbort);
-      };
-
-      pending.set(requestId, {
-        resolve: (result) => resolve(result as T),
-        reject,
-        cleanup,
-      });
-      signal?.addEventListener("abort", onAbort, { once: true });
-
-      sendMsg({ type: "canvas_request", requestId, action, params } as CanvasRequest);
-    });
-  };
+  ): Promise<T> => broker.request<T>(actor, action, params, signal);
 
   const getCanvasTool = defineTool({
     name: "get_canvas",
@@ -651,22 +587,6 @@ export const createCanvasTools = (
         signal,
       );
       return snapshotImageContent(snapshot);
-    },
-    handleResponse(response: CanvasResponse): void {
-      const request = pending.get(response.requestId);
-      if (!request) return;
-      pending.delete(response.requestId);
-      request.cleanup();
-      if (response.ok) {
-        request.resolve(response.result);
-      } else {
-        request.reject(new Error(response.error));
-      }
-    },
-    dispose(): void {
-      for (const [requestId] of pending) {
-        rejectPending(requestId, new Error("tldraw client disconnected"));
-      }
     },
   };
 };
