@@ -1,1 +1,1 @@
-{"version":"7.0.0-dev.20260515.1","root":["./src/canvastools.ts","./src/index.ts","./src/protocol.ts"]}
+{"version":"7.0.0-dev.20260616.1","root":["./src/canvastools.ts","./src/codingagenttool.ts","./src/index.ts","./src/logger.ts","./src/protocol.ts"]}
