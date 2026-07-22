@@ -97,6 +97,49 @@ export type PutMermaidParams = {
   y?: number;
 };
 
+export type CanvasPoint = {
+  x: number;
+  y: number;
+  pressure?: number;
+};
+
+export type PutImageParams = {
+  src: string;
+  name?: string;
+  mimeType?: string;
+  altText?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+};
+
+export type PutStrokeParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+  dash?: string;
+  fill?: string;
+  isClosed?: boolean;
+};
+
+export type PutHighlightParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+};
+
+export type PutLineParams = {
+  id?: string;
+  points: CanvasPoint[];
+  color?: string;
+  size?: string;
+  dash?: string;
+  spline?: "line" | "cubic";
+};
+
 export type DeleteShapesParams = {
   ids: string[];
 };
@@ -138,6 +181,17 @@ export type PutMermaidResult = {
   lints?: CanvasLint[];
 };
 
+export type PutImageResult = {
+  createdShapeId: string;
+  createdAssetId?: string;
+};
+
+export type PutPathResult = {
+  shapeId: string;
+  pointCount: number;
+  appended: boolean;
+};
+
 export type UpdateShapeResult = {
   updatedShapeId: string;
   skippedBindings?: SkippedArrowBinding[];
@@ -164,6 +218,8 @@ export type CanvasToolResult =
   | CanvasSnapshot
   | PutShapeResult
   | PutMermaidResult
+  | PutImageResult
+  | PutPathResult
   | UpdateShapeResult
   | DeleteShapesResult
   | MoveShapesResult
@@ -204,6 +260,34 @@ export type CanvasRequest =
       actor: CanvasActor;
       action: "put_mermaid";
       params: PutMermaidParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_image";
+      params: PutImageParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_draw";
+      params: PutStrokeParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_highlight";
+      params: PutHighlightParams;
+    }
+  | {
+      type: "canvas_request";
+      requestId: string;
+      actor: CanvasActor;
+      action: "put_line";
+      params: PutLineParams;
     }
   | {
       type: "canvas_request";
