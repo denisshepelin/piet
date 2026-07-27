@@ -10,17 +10,17 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.78.0",
-    "@tldraw/mermaid": "^5.2.2",
-    "@tldraw/sync": "5.2.2",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "tldraw": "^5.2.2"
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@tldraw/mermaid": "^5.2.5",
+    "@tldraw/sync": "5.2.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tldraw": "^5.2.5"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
-    "vite": "^8.0.13"
+    "@vitejs/plugin-react": "^6.0.4",
+    "vite": "^8.1.5"
   }
 }

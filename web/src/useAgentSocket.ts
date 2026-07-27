@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
   AgentPairSummary,
+  CanvasAnchor,
   CanvasRequest,
   CanvasToolResult,
   ClientLogEvent,
@@ -27,6 +28,7 @@ export type CodingRun = {
   title: string;
   steps: string[];
   status: "running" | "done" | "error";
+  anchor: CanvasAnchor;
 };
 
 type PairState = AgentPairSummary & {
@@ -62,7 +64,8 @@ export type AgentChat = {
   selectPair: (pairId: string) => void;
   createPair: () => void;
   removePair: (pairId: string) => void;
-  send: (text: string) => void;
+  dismissCodingRun: (runId: string) => void;
+  send: (text: string, anchor: CanvasAnchor) => void;
   setModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
   setCanvasModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
   setCodingModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
@@ -282,7 +285,10 @@ export const useAgentSocket = (url: string): AgentChat => {
         case "prompt_done":
           textIdsRef.current.delete(message.pairId);
           thinkingIdsRef.current.delete(message.pairId);
-          updatePair(message.pairId, (pair) => ({ ...pair, busy: false, codingRuns: [] }));
+          updatePair(message.pairId, (pair) => ({ ...pair, busy: false }));
+          break;
+        case "main_state":
+          updatePair(message.pairId, (pair) => ({ ...pair, busy: message.busy }));
           break;
         case "coding_status_start":
           updatePair(message.pairId, (pair) => ({
@@ -294,6 +300,7 @@ export const useAgentSocket = (url: string): AgentChat => {
                 title: message.title,
                 steps: [message.text],
                 status: "running",
+                anchor: message.anchor,
               },
             ],
           }));
@@ -401,7 +408,7 @@ export const useAgentSocket = (url: string): AgentChat => {
     [activePairId, sendRaw],
   );
   const send = useCallback(
-    (text: string): void => {
+    (text: string, anchor: CanvasAnchor): void => {
       const trimmed = text.trim();
       if (!activePairId || !trimmed) return;
       const promptId = randomId();
@@ -410,7 +417,7 @@ export const useAgentSocket = (url: string): AgentChat => {
         busy: true,
         messages: [...pair.messages, { id: promptId, role: "user", text: trimmed }],
       }));
-      sendRaw({ type: "prompt", pairId: activePairId, id: promptId, text: trimmed });
+      sendRaw({ type: "prompt", pairId: activePairId, id: promptId, text: trimmed, anchor });
     },
     [activePairId, sendRaw, updatePair],
   );
@@ -470,6 +477,13 @@ export const useAgentSocket = (url: string): AgentChat => {
     selectPair: setActivePairId,
     createPair: () => sendRaw({ type: "create_pair" }),
     removePair: (pairId) => sendRaw({ type: "remove_pair", pairId }),
+    dismissCodingRun: (runId) => {
+      if (!activePairId) return;
+      updatePair(activePairId, (pair) => ({
+        ...pair,
+        codingRuns: pair.codingRuns.filter((run) => run.runId !== runId),
+      }));
+    },
     send,
     setModel: setCanvasModel,
     setCanvasModel,

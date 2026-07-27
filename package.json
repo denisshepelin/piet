@@ -15,9 +15,9 @@
     "fmt:check": "oxfmt --check"
   },
   "devDependencies": {
-    "@typescript/native-preview": "^7.0.0-dev.20260515.1",
-    "oxfmt": "^0.50.0",
-    "oxlint": "^1.65.0"
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0"
   },
   "engines": {
     "node": ">=22.19.0",

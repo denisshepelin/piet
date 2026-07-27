@@ -16,28 +16,19 @@ backend CanvasBroker ── actor routing, pending requests, timeout, abort
       Canvas API ── get_canvas, put_shape, put_mermaid, update, move, delete
           │
           ▼
- AgentPairManager ── N independent (canvas agent ↔ coding agent) pairs
+ AgentPairManager ── long-lived main canvas agent
+          │
+          └── spawn_research ── temporary repository subagent sessions
 ```
 
 The boundaries are:
 
-1. `canvasBroker.ts` is transport infrastructure. One broker belongs to a browser connection and safely multiplexes requests from every pair.
-2. `canvasTools.ts` is the model-facing canvas API. It binds a curated tool set to one `CanvasActor`; there is no `canvas.exec` tool.
-3. `agentPairManager.ts` is the control plane. It creates, configures, prompts, and disposes independent canvas/coding session pairs.
+1. `canvasBroker.ts` is transport infrastructure. One broker belongs to a browser connection and safely matches canvas requests and responses.
+2. `canvasTools.ts` is the model-facing canvas API. It binds a curated tool set to the main `CanvasActor`; there is no `canvas.exec` tool.
+3. `agentPairManager.ts` currently provides the connection control plane and owns the long-lived main session, mailbox, model settings, and temporary subagent runtime.
+4. `codingAgentTool.ts` implements non-blocking `spawn_research`. Every task gets an isolated in-memory session and repository tools but no canvas access.
 
-Coding agents receive only repository tools and `send_message` input from their paired canvas agent. They do not know about the broker, tldraw, or canvas requests.
-
-## Parallel pairs
-
-Every browser connection starts with one pair. The sidebar can create up to eight, select among them, and remove idle pairs. Each pair has separate:
-
-- canvas and coding sessions;
-- conversation history;
-- model and thinking settings;
-- busy state, stream, and coding-run status;
-- actor id, name, and color.
-
-Different pairs can process prompts concurrently. Browser canvas mutations are serialized at the editor boundary because they share one visible editor. Each mutation starts with a tldraw history mark; failures call `bailToMark`, rolling back that request. Created and changed shapes carry `meta.piet.actor` with the issuing pair's identity.
+The main agent starts up to four independent tasks in one tool call and immediately regains control. Subagent activity streams directly to UI tabs. Terminal results enter a mailbox and are delivered to the main session only when it is idle. Browser canvas mutations remain serialized at the editor boundary; failed mutations roll back to their request history mark.
 
 ## Collaboration and conflicts
 
@@ -57,7 +48,7 @@ Client messages:
 
 - `create_pair { name? }`
 - `remove_pair { pairId }`
-- `prompt { pairId, id, text }`
+- `prompt { pairId, id, text, anchor: { x, y } }`, where the page-space anchor is captured from the selection, recent pointer, or viewport at submission time
 - `set_canvas_model` / `set_coding_model { pairId, provider, modelId }`
 - `set_canvas_thinking` / `set_coding_thinking { pairId, level }`
 - `canvas_response { requestId, ok, result | error }`
@@ -68,7 +59,8 @@ Server messages:
 - `ready`, `pair_created`, `pair_removed`
 - `models`, `model_changed`, `thinking_changed`, all scoped by `pairId`
 - `text_delta`, `thinking_delta`, `tool_start`, `tool_end`, `prompt_done`, all scoped by `pairId` and prompt/run ids
-- `coding_status_start/update/end`, scoped by `pairId`
+- `main_state`, indicating mailbox synthesis and other main-agent work
+- `coding_status_start/update/end`, carrying background subagent lifecycle, the submission anchor, and result previews
 - `canvas_request { requestId, actor, action, params }`
 - `error { pairId?, promptId?, message }`, `pong`
 
@@ -86,5 +78,7 @@ The curated actions are `get_canvas`, `put_shape`, `put_mermaid`, `update_shape`
 
 - Agent control WebSocket reconnect still requires a page reload.
 - Protocol types are mirrored manually between backend and web.
+- Pair-oriented protocol identifiers remain as a compatibility layer even though the UI exposes one main agent.
+- Active subagents are in-memory and are aborted when their browser connection closes.
 - Sync rooms and assets are development-grade and in-memory/inline.
-- The single visible editor serializes agent canvas writes, while agent reasoning and coding work remain parallel.
+- The single visible editor serializes main-agent canvas writes, while repository subagents run in parallel.

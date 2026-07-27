@@ -12,14 +12,14 @@
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.79.6",
-    "@earendil-works/pi-coding-agent": "^0.79.6",
-    "@tldraw/sync-core": "5.2.2",
-    "ws": "^8.18.1"
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@tldraw/sync-core": "5.2.5",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
+    "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.22.0"
+    "tsx": "^4.23.1"
   }
 }

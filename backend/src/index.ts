@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  AuthStorage,
   DefaultResourceLoader,
-  ModelRegistry,
+  ModelRuntime,
   SettingsManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
@@ -22,9 +21,9 @@ const DEFAULT_CODING_MODEL_PROVIDER =
   process.env.CODING_MODEL_PROVIDER ?? DEFAULT_CANVAS_MODEL_PROVIDER;
 const DEFAULT_CODING_MODEL_ID = process.env.CODING_MODEL_ID ?? DEFAULT_CANVAS_MODEL_ID;
 
-const CODING_SYSTEM_APPENDIX = `You are the Piet coding agent. You receive tasks from one paired canvas agent.
+const CODING_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. You receive one bounded task from the main canvas agent.
 
-Focus on repository work: inspect files, edit code, run commands, test changes, and report concise results. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, changed files, verification, blockers, and canvas-ready content.`;
+Inspect the repository, run read-only commands, and report concise findings. Do not edit files or run commands that modify the repository. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, evidence with file paths, verification, blockers, and canvas-ready content.`;
 
 const logEvent = createEventLog();
 const wss = new WebSocketServer({ port: PORT });
@@ -53,8 +52,7 @@ wss.on("connection", async (socket) => {
     send(socket, message);
   };
 
-  const authStorage = AuthStorage.create();
-  const modelRegistry = ModelRegistry.create(authStorage);
+  const modelRuntime = await ModelRuntime.create();
   const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
   const canvasResourceLoader = new DefaultResourceLoader({
     cwd: process.cwd(),
@@ -80,8 +78,7 @@ wss.on("connection", async (socket) => {
     send: sendToClient,
   });
   const pairManager = new AgentPairManager({
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     settingsManager,
     canvasResourceLoader,
     codingResourceLoader,

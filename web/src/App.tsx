@@ -18,9 +18,9 @@ export const App = (): ReactElement => {
     <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
       <Tldraw store={store}>
         <TldrawAgentBridge setCanvasRequestHandler={chat.setCanvasRequestHandler} />
+        <CodingStatusPanel runs={chat.codingRuns} />
         <ChatSidebar chat={chat} />
       </Tldraw>
-      <CodingStatusPanel runs={chat.codingRuns} />
     </div>
   );
 };

@@ -38,7 +38,10 @@ const selectStyle: React.CSSProperties = {
 export const ChatSidebar = ({ chat }: Props): ReactElement => {
   const editor = useEditor();
   const [input, setInput] = useState("");
+  const [view, setView] = useState("main");
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => setView("main"), [chat.activePairId]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -66,7 +69,15 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
     if (!chat.ready || chat.busy) return;
     const text = input.trim();
     if (text.length === 0) return;
-    chat.send(text);
+    const selection = editor.getSelectionPageBounds();
+    const pointer = editor.inputs.currentPagePoint;
+    const viewport = editor.getViewportPageBounds();
+    const anchor = selection
+      ? { x: selection.x + selection.w + 24, y: selection.y }
+      : pointer
+        ? { x: pointer.x, y: pointer.y }
+        : { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
+    chat.send(text, anchor);
     setInput("");
   };
 
@@ -90,6 +101,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
   const statusColor = chat.ready ? (chat.busy ? "#d97706" : "#16a34a") : "#dc2626";
   const canvasThinkingDisabled = !chat.ready || chat.canvasAvailableThinkingLevels.length <= 1;
   const codingThinkingDisabled = !chat.ready || chat.codingAvailableThinkingLevels.length <= 1;
+  const selectedRun = chat.codingRuns.find((run) => run.runId === view);
 
   return (
     <aside
@@ -129,10 +141,10 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <strong>pi pairs</strong>
+          <strong>piet</strong>
           <span style={{ color: statusColor, fontSize: 12 }}>● {status}</span>
         </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", color: "#6b7280" }}>
           <span
             style={{
               width: 10,
@@ -141,33 +153,10 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
               background: chat.activePair?.actor.color ?? "#9ca3af",
             }}
           />
-          <select
-            value={chat.activePairId ?? ""}
-            onChange={(e) => chat.selectPair(e.target.value)}
-            disabled={!chat.ready || chat.pairs.length === 0}
-            style={selectStyle}
-          >
-            {chat.pairs.map((pair) => (
-              <option key={pair.id} value={pair.id}>
-                {pair.actor.name}
-                {pair.busy ? " (working)" : ""}
-              </option>
-            ))}
-          </select>
-          <button type="button" onClick={chat.createPair} disabled={!chat.ready} title="New pair">
-            new
-          </button>
-          <button
-            type="button"
-            onClick={() => chat.activePairId && chat.removePair(chat.activePairId)}
-            disabled={!chat.ready || chat.pairs.length <= 1 || chat.busy}
-            title="Remove pair"
-          >
-            remove
-          </button>
+          <span style={{ fontSize: 12 }}>main agent with background subagents</span>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>canvas</label>
+          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>main</label>
           <select
             value={chat.currentCanvasModel ? encodeModel(chat.currentCanvasModel) : ""}
             onChange={(e) => onModelChange("canvas", e.target.value)}
@@ -187,7 +176,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
           </select>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>coding</label>
+          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>research</label>
           <select
             value={chat.currentCodingModel ? encodeModel(chat.currentCodingModel) : ""}
             onChange={(e) => onModelChange("coding", e.target.value)}
@@ -207,7 +196,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
           </select>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>canvas think</label>
+          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>main think</label>
           <select
             value={chat.canvasThinkingLevel}
             onChange={(e) => chat.setCanvasThinking(e.target.value as ModelThinkingLevel)}
@@ -230,7 +219,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
           </select>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>coding think</label>
+          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>research think</label>
           <select
             value={chat.codingThinkingLevel}
             onChange={(e) => chat.setCodingThinking(e.target.value as ModelThinkingLevel)}
@@ -254,6 +243,44 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
         </div>
       </header>
 
+      <nav
+        style={{
+          display: "flex",
+          gap: 4,
+          padding: "7px 10px",
+          overflowX: "auto",
+          borderBottom: "1px solid #e5e7eb",
+          background: "#fff",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setView("main")}
+          style={{ fontWeight: view === "main" ? 700 : 400, whiteSpace: "nowrap" }}
+        >
+          main {chat.busy ? "●" : ""}
+        </button>
+        {chat.codingRuns.map((run) => (
+          <button
+            key={run.runId}
+            type="button"
+            onClick={() => setView(run.runId)}
+            style={{
+              fontWeight: view === run.runId ? 700 : 400,
+              whiteSpace: "nowrap",
+              color:
+                run.status === "error"
+                  ? "#dc2626"
+                  : run.status === "running"
+                    ? "#d97706"
+                    : "#16a34a",
+            }}
+          >
+            {run.title} {run.status === "running" ? "●" : run.status === "error" ? "×" : "✓"}
+          </button>
+        ))}
+      </nav>
+
       <div
         ref={listRef}
         style={{
@@ -265,10 +292,59 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
           gap: 8,
         }}
       >
-        {chat.messages.length === 0 && (
+        {view === "main" && chat.messages.length === 0 && (
           <div style={{ color: "#9ca3af", fontSize: 12 }}>send a message to start.</div>
         )}
-        {chat.messages.map((m) => {
+        {selectedRun && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 8,
+                alignItems: "center",
+                fontSize: 12,
+                color: "#6b7280",
+              }}
+            >
+              <span>
+                {selectedRun.status === "running"
+                  ? "Subagent is working in the background. You can continue chatting with main."
+                  : `Subagent ${selectedRun.status}.`}
+              </span>
+              {selectedRun.status !== "running" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    chat.dismissCodingRun(selectedRun.runId);
+                    setView("main");
+                  }}
+                >
+                  dismiss
+                </button>
+              )}
+            </div>
+            {selectedRun.steps.map((step, index) => (
+              <div
+                key={step}
+                style={{
+                  padding: "7px 9px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 7,
+                  background: index === selectedRun.steps.length - 1 ? "#fff" : "#f9fafb",
+                  color: index === selectedRun.steps.length - 1 ? "#111827" : "#6b7280",
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  fontSize: 11,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              >
+                {step}
+              </div>
+            ))}
+          </div>
+        )}
+        {(view === "main" ? chat.messages : []).map((m) => {
           const bg =
             m.role === "user"
               ? "#dbeafe"
@@ -313,7 +389,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
             </div>
           );
         })}
-        {chat.busy && (
+        {view === "main" && chat.busy && (
           <div style={{ color: "#9ca3af", fontSize: 12, alignSelf: "flex-start" }}>
             pi is thinking…
           </div>

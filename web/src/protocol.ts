@@ -225,6 +225,11 @@ export type CanvasToolResult =
   | MoveShapesResult
   | SetViewResult;
 
+export type CanvasAnchor = {
+  x: number;
+  y: number;
+};
+
 export type CanvasActor = {
   id: string;
   name: string;
@@ -323,7 +328,14 @@ export type CanvasResponse =
   | { type: "canvas_response"; requestId: string; ok: false; error: string };
 
 export type CodingStatusMessage =
-  | { type: "coding_status_start"; pairId: string; runId: string; title: string; text: string }
+  | {
+      type: "coding_status_start";
+      pairId: string;
+      runId: string;
+      title: string;
+      text: string;
+      anchor: CanvasAnchor;
+    }
   | { type: "coding_status_update"; pairId: string; runId: string; text: string }
   | { type: "coding_status_end"; pairId: string; runId: string; text: string; isError: boolean };
 
@@ -337,7 +349,7 @@ export type ClientLogEvent = {
 export type ClientMessage =
   | { type: "create_pair"; name?: string }
   | { type: "remove_pair"; pairId: string }
-  | { type: "prompt"; pairId: string; id: string; text: string }
+  | { type: "prompt"; pairId: string; id: string; text: string; anchor: CanvasAnchor }
   | { type: "set_canvas_model"; pairId: string; provider: string; modelId: string }
   | { type: "set_coding_model"; pairId: string; provider: string; modelId: string }
   | { type: "set_canvas_thinking"; pairId: string; level: ModelThinkingLevel }
@@ -401,6 +413,7 @@ export type ServerMessage =
       isError: boolean;
     }
   | { type: "prompt_done"; pairId: string; promptId: string }
+  | { type: "main_state"; pairId: string; busy: boolean }
   | CodingStatusMessage
   | CanvasRequest
   | { type: "error"; pairId?: string; promptId?: string; message: string }
