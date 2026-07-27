@@ -3,7 +3,7 @@ import { inlineBase64AssetStore, Tldraw } from "tldraw";
 import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
 import { ChatSidebar } from "./ChatSidebar.tsx";
-import { CodingStatusPanel } from "./CodingStatusPanel.tsx";
+import { SubagentWindows } from "./SubagentWindows.tsx";
 import { TldrawAgentBridge } from "./TldrawAgentBridge.tsx";
 import { useAgentSocket } from "./useAgentSocket.ts";
 
@@ -18,7 +18,7 @@ export const App = (): ReactElement => {
     <div style={{ position: "fixed", inset: 0, overflow: "hidden" }}>
       <Tldraw store={store}>
         <TldrawAgentBridge setCanvasRequestHandler={chat.setCanvasRequestHandler} />
-        <CodingStatusPanel runs={chat.codingRuns} />
+        <SubagentWindows runs={chat.runs} />
         <ChatSidebar chat={chat} />
       </Tldraw>
     </div>

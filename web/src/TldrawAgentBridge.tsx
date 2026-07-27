@@ -91,11 +91,6 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
     reader.readAsDataURL(blob);
   });
 
-// Filters out leftover status-box shapes from older sessions, when coding-agent
-// progress was rendered as canvas shapes instead of the DOM overlay panel.
-const isPietInternalShape = (meta: unknown): boolean =>
-  isRecord(meta) && isRecord(meta.piet) && meta.piet.kind === "coding-status";
-
 const normalizeScope = (scope: CanvasScope | undefined): CanvasScope => scope ?? "viewport";
 
 const normalizeMaxShapes = (maxShapes: number | undefined): number => {
@@ -308,7 +303,6 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         scope === "selection" ? editor.getSelectedShapes() : editor.getCurrentPageShapesSorted();
 
       const shapesWithBounds = sourceShapes
-        .filter((shape) => !isPietInternalShape(shape.meta))
         .map((shape) => ({ shape, bounds: editor.getShapePageBounds(shape) }))
         .filter(
           ({ bounds }) => scope !== "viewport" || (bounds ? bounds.collides(viewport) : false),
