@@ -7,7 +7,7 @@ import {
   type ReactElement,
 } from "react";
 import { useEditor, useValue } from "tldraw";
-import type { CodingRun } from "./useAgentSocket.ts";
+import type { SubagentRun } from "./useAgentSocket.ts";
 
 const MAX_VISIBLE_STEPS = 6;
 const WINDOW_GAP = 14;
@@ -27,7 +27,7 @@ const cardStyle: CSSProperties = {
   pointerEvents: "auto",
 };
 
-const statusMeta = (status: CodingRun["status"]): { label: string; color: string } => {
+const statusMeta = (status: SubagentRun["status"]): { label: string; color: string } => {
   if (status === "running") return { label: "working", color: "#d97706" };
   if (status === "error") return { label: "error", color: "#dc2626" };
   return { label: "done", color: "#16a34a" };
@@ -41,7 +41,7 @@ type DragState = {
   y: number;
 };
 
-const RunWindow = ({ run, lane }: { run: CodingRun; lane: number }): ReactElement => {
+const RunWindow = ({ run, lane }: { run: SubagentRun; lane: number }): ReactElement => {
   const editor = useEditor();
   const [isDismissed, setIsDismissed] = useState(false);
   const [position, setPosition] = useState(() => ({
@@ -203,7 +203,7 @@ const RunWindow = ({ run, lane }: { run: CodingRun; lane: number }): ReactElemen
   );
 };
 
-export const CodingStatusPanel = ({ runs }: { runs: CodingRun[] }): ReactElement | null => {
+export const SubagentWindows = ({ runs }: { runs: SubagentRun[] }): ReactElement | null => {
   if (runs.length === 0) return null;
   return (
     <div

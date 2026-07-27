@@ -6,26 +6,52 @@ import {
   SettingsManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { AgentPairManager } from "./agentPairManager.js";
-import { CanvasBroker } from "./canvasBroker.js";
-import { CANVAS_SYSTEM_PROMPT } from "./canvasPrompt.js";
+import { CanvasConnection } from "./canvasConnection.js";
+import { MainAgentManager } from "./mainAgentManager.js";
+import { MAIN_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createEventLog } from "./logger.js";
 import type { ClientMessage, ServerMessage } from "./protocol.js";
 import { startSyncServer } from "./syncServer.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const SYNC_PORT = Number(process.env.SYNC_PORT ?? 8788);
-const DEFAULT_CANVAS_MODEL_PROVIDER = process.env.CANVAS_MODEL_PROVIDER ?? "opencode-go";
-const DEFAULT_CANVAS_MODEL_ID = process.env.CANVAS_MODEL_ID ?? "minimax-m3";
-const DEFAULT_CODING_MODEL_PROVIDER =
-  process.env.CODING_MODEL_PROVIDER ?? DEFAULT_CANVAS_MODEL_PROVIDER;
-const DEFAULT_CODING_MODEL_ID = process.env.CODING_MODEL_ID ?? DEFAULT_CANVAS_MODEL_ID;
+const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "opencode-go";
+const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "minimax-m3";
+const DEFAULT_RESEARCH_MODEL_PROVIDER =
+  process.env.RESEARCH_MODEL_PROVIDER ?? DEFAULT_MAIN_MODEL_PROVIDER;
+const DEFAULT_RESEARCH_MODEL_ID = process.env.RESEARCH_MODEL_ID ?? DEFAULT_MAIN_MODEL_ID;
 
-const CODING_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. You receive one bounded task from the main canvas agent.
+const RESEARCH_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. You receive one bounded task from the main canvas agent.
 
 Inspect the repository, run read-only commands, and report concise findings. Do not edit files or run commands that modify the repository. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, evidence with file paths, verification, blockers, and canvas-ready content.`;
 
 const logEvent = createEventLog();
+
+/**
+ * Model runtime, settings, and resource loaders are immutable and process-scoped.
+ * Settings and context files are therefore read once at startup, not per connection.
+ */
+const modelRuntime = await ModelRuntime.create();
+const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
+const mainResourceLoader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  settingsManager,
+  noExtensions: true,
+  noSkills: true,
+  noPromptTemplates: true,
+  noContextFiles: true,
+  systemPromptOverride: () => MAIN_SYSTEM_PROMPT,
+  appendSystemPrompt: [],
+});
+const researchResourceLoader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  settingsManager,
+  appendSystemPromptOverride: (base) => [...base, RESEARCH_SYSTEM_APPENDIX],
+});
+await Promise.all([mainResourceLoader.reload(), researchResourceLoader.reload()]);
+
 const wss = new WebSocketServer({ port: PORT });
 startSyncServer(SYNC_PORT);
 
@@ -52,47 +78,31 @@ wss.on("connection", async (socket) => {
     send(socket, message);
   };
 
-  const modelRuntime = await ModelRuntime.create();
-  const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
-  const canvasResourceLoader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: getAgentDir(),
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noContextFiles: true,
-    systemPromptOverride: () => CANVAS_SYSTEM_PROMPT,
-    appendSystemPrompt: [],
-  });
-  const codingResourceLoader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: getAgentDir(),
-    settingsManager,
-    appendSystemPromptOverride: (base) => [...base, CODING_SYSTEM_APPENDIX],
-  });
-  await Promise.all([canvasResourceLoader.reload(), codingResourceLoader.reload()]);
-
-  const canvasBroker = new CanvasBroker({
+  const actor = { id: `main:${connId}`, name: "Main agent", color: "#2563eb" };
+  const canvasConnection = new CanvasConnection({
+    actor,
     isConnected: () => socket.readyState === socket.OPEN,
     send: sendToClient,
   });
-  const pairManager = new AgentPairManager({
+  const mainAgent = new MainAgentManager({
+    actor,
     modelRuntime,
     settingsManager,
-    canvasResourceLoader,
-    codingResourceLoader,
-    canvasBroker,
-    defaultCanvasModel: { provider: DEFAULT_CANVAS_MODEL_PROVIDER, id: DEFAULT_CANVAS_MODEL_ID },
-    defaultCodingModel: { provider: DEFAULT_CODING_MODEL_PROVIDER, id: DEFAULT_CODING_MODEL_ID },
+    mainResourceLoader,
+    researchResourceLoader,
+    requestCanvas: canvasConnection.request.bind(canvasConnection),
+    defaultMainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
+    defaultResearchModel: {
+      provider: DEFAULT_RESEARCH_MODEL_PROVIDER,
+      id: DEFAULT_RESEARCH_MODEL_ID,
+    },
     connId,
     logEvent,
     send: sendToClient,
   });
 
-  sendToClient({ type: "ready" });
   try {
-    await pairManager.createPair();
+    await mainAgent.initialize();
   } catch (error) {
     sendToClient({
       type: "error",
@@ -127,19 +137,15 @@ wss.on("connection", async (socket) => {
 
     logEvent({ source: "backend", connId, event: `ws.in.${message.type}`, data: message });
     if (message.type === "canvas_response") {
-      canvasBroker.handleResponse(message);
+      canvasConnection.handleResponse(message);
       return;
     }
     try {
-      await pairManager.handle(message);
+      await mainAgent.handle(message);
     } catch (error) {
       sendToClient({
         type: "error",
-        ...(message.type === "prompt"
-          ? { pairId: message.pairId, promptId: message.id }
-          : "pairId" in message
-            ? { pairId: message.pairId }
-            : {}),
+        ...(message.type === "prompt" ? { promptId: message.id } : {}),
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -148,8 +154,8 @@ wss.on("connection", async (socket) => {
   socket.on("close", () => {
     console.log(`[ws] client disconnected (${connId})`);
     logEvent({ source: "backend", connId, event: "ws.close" });
-    canvasBroker.dispose();
-    pairManager.dispose();
+    canvasConnection.dispose();
+    mainAgent.dispose();
   });
 });
 

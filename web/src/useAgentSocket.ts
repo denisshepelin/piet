@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
-  AgentPairSummary,
+  AgentRole,
+  CanvasActor,
   CanvasAnchor,
   CanvasRequest,
   CanvasToolResult,
   ClientLogEvent,
   ClientMessage,
+  ModelRef,
+  RoleModelState,
+  RunStatus,
   ServerMessage,
 } from "./protocol.ts";
 
@@ -23,70 +27,46 @@ export type ChatMessage = {
 
 export type CanvasRequestHandler = (request: CanvasRequest) => Promise<CanvasToolResult>;
 
-export type CodingRun = {
+export type SubagentRun = {
   runId: string;
   title: string;
   steps: string[];
-  status: "running" | "done" | "error";
+  status: RunStatus;
   anchor: CanvasAnchor;
 };
 
-type PairState = AgentPairSummary & {
+type ChatState = {
+  actor: CanvasActor | null;
+  busy: boolean;
   messages: ChatMessage[];
-  codingRuns: CodingRun[];
+  runs: SubagentRun[];
   models: Model<Api>[];
-  currentCanvasModel: Pick<Model<Api>, "provider" | "id"> | null;
-  currentCodingModel: Pick<Model<Api>, "provider" | "id"> | null;
-  canvasThinkingLevel: ModelThinkingLevel;
-  canvasAvailableThinkingLevels: ModelThinkingLevel[];
-  codingThinkingLevel: ModelThinkingLevel;
-  codingAvailableThinkingLevels: ModelThinkingLevel[];
+  roles: Record<AgentRole, RoleModelState>;
 };
 
-export type AgentChat = {
+export type AgentChat = ChatState & {
   ready: boolean;
-  busy: boolean;
-  pairs: AgentPairSummary[];
-  activePairId: string | null;
-  activePair: AgentPairSummary | null;
-  messages: ChatMessage[];
-  codingRuns: CodingRun[];
-  models: Model<Api>[];
-  currentModel: Pick<Model<Api>, "provider" | "id"> | null;
-  currentCanvasModel: Pick<Model<Api>, "provider" | "id"> | null;
-  currentCodingModel: Pick<Model<Api>, "provider" | "id"> | null;
-  thinkingLevel: ModelThinkingLevel;
-  availableThinkingLevels: ModelThinkingLevel[];
-  canvasThinkingLevel: ModelThinkingLevel;
-  canvasAvailableThinkingLevels: ModelThinkingLevel[];
-  codingThinkingLevel: ModelThinkingLevel;
-  codingAvailableThinkingLevels: ModelThinkingLevel[];
-  selectPair: (pairId: string) => void;
-  createPair: () => void;
-  removePair: (pairId: string) => void;
-  dismissCodingRun: (runId: string) => void;
+  dismissRun: (runId: string) => void;
   send: (text: string, anchor: CanvasAnchor) => void;
-  setModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
-  setCanvasModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
-  setCodingModel: (selection: Pick<Model<Api>, "provider" | "id">) => void;
-  setThinking: (level: ModelThinkingLevel) => void;
-  setCanvasThinking: (level: ModelThinkingLevel) => void;
-  setCodingThinking: (level: ModelThinkingLevel) => void;
+  setModel: (role: AgentRole, selection: ModelRef) => void;
+  setThinking: (role: AgentRole, level: ModelThinkingLevel) => void;
   setCanvasRequestHandler: (handler: CanvasRequestHandler | null) => void;
 };
 
-const emptyPair = (summary: AgentPairSummary): PairState => ({
-  ...summary,
+const idleRole: RoleModelState = {
+  current: null,
+  thinkingLevel: "off",
+  availableThinkingLevels: ["off"],
+};
+
+const initialState: ChatState = {
+  actor: null,
+  busy: false,
   messages: [],
-  codingRuns: [],
+  runs: [],
   models: [],
-  currentCanvasModel: null,
-  currentCodingModel: null,
-  canvasThinkingLevel: "off",
-  canvasAvailableThinkingLevels: ["off"],
-  codingThinkingLevel: "off",
-  codingAvailableThinkingLevels: ["off"],
-});
+  roles: { main: idleRole, research: idleRole },
+};
 
 const randomId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -104,22 +84,16 @@ const summarizeCanvasResult = (result: CanvasToolResult): unknown =>
 
 export const useAgentSocket = (url: string): AgentChat => {
   const [ready, setReady] = useState(false);
-  const [pairStates, setPairStates] = useState<Record<string, PairState>>({});
-  const [activePairId, setActivePairId] = useState<string | null>(null);
-  const activePairIdRef = useRef<string | null>(null);
+  const [state, setState] = useState<ChatState>(initialState);
   const wsRef = useRef<WebSocket | null>(null);
   const canvasRequestHandlerRef = useRef<CanvasRequestHandler | null>(null);
-  const textIdsRef = useRef(new Map<string, string>());
-  const thinkingIdsRef = useRef(new Map<string, string>());
+  const textIdRef = useRef<string | null>(null);
+  const thinkingIdRef = useRef<string | null>(null);
   const pendingLogsRef = useRef<ClientLogEvent[]>([]);
   const logFlushTimerRef = useRef<number | null>(null);
-  activePairIdRef.current = activePairId;
 
-  const updatePair = useCallback((pairId: string, update: (pair: PairState) => PairState): void => {
-    setPairStates((previous) => {
-      const pair = previous[pairId];
-      return pair ? { ...previous, [pairId]: update(pair) } : previous;
-    });
+  const updateState = useCallback((update: (state: ChatState) => ChatState): void => {
+    setState(update);
   }, []);
 
   const sendRaw = useCallback((message: ClientMessage): void => {
@@ -156,20 +130,12 @@ export const useAgentSocket = (url: string): AgentChat => {
     const socket = new WebSocket(url);
     wsRef.current = socket;
     socket.addEventListener("open", () => {
-      setReady(true);
       logEvent("web.ws_open");
       flushLogs();
     });
     socket.addEventListener("close", () => {
       setReady(false);
-      setPairStates((previous) =>
-        Object.fromEntries(
-          Object.entries(previous).map(([id, pair]) => [
-            id,
-            { ...pair, busy: false, codingRuns: [] },
-          ]),
-        ),
-      );
+      updateState((current) => ({ ...current, busy: false, runs: [] }));
     });
     socket.addEventListener("error", () => logEvent("web.ws_error", undefined, "error"));
     socket.addEventListener("message", (event) => {
@@ -182,81 +148,45 @@ export const useAgentSocket = (url: string): AgentChat => {
       }
 
       switch (message.type) {
-        case "pair_created":
-          setPairStates((previous) => ({
-            ...previous,
-            [message.pair.id]: emptyPair(message.pair),
-          }));
-          setActivePairId((current) => current ?? message.pair.id);
+        case "ready":
+          setReady(true);
+          updateState((current) => ({ ...current, actor: message.actor }));
           break;
-        case "pair_removed":
-          setPairStates((previous) => {
-            const next = { ...previous };
-            delete next[message.pairId];
-            setActivePairId((current) =>
-              current === message.pairId ? (Object.keys(next)[0] ?? null) : current,
-            );
-            return next;
-          });
-          break;
-        case "models":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
+        case "model_state":
+          updateState((current) => ({
+            ...current,
             models: message.available,
-            currentCanvasModel: message.canvasCurrent,
-            currentCodingModel: message.codingCurrent,
-            canvasThinkingLevel: message.canvasThinkingLevel,
-            canvasAvailableThinkingLevels: message.canvasAvailableThinkingLevels,
-            codingThinkingLevel: message.codingThinkingLevel,
-            codingAvailableThinkingLevels: message.codingAvailableThinkingLevels,
-          }));
-          break;
-        case "model_changed":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
-            currentCanvasModel: message.canvasCurrent,
-            currentCodingModel: message.codingCurrent,
-            canvasThinkingLevel: message.canvasThinkingLevel,
-            canvasAvailableThinkingLevels: message.canvasAvailableThinkingLevels,
-            codingThinkingLevel: message.codingThinkingLevel,
-            codingAvailableThinkingLevels: message.codingAvailableThinkingLevels,
-          }));
-          break;
-        case "thinking_changed":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
-            canvasThinkingLevel: message.canvasThinkingLevel,
-            canvasAvailableThinkingLevels: message.canvasAvailableThinkingLevels,
-            codingThinkingLevel: message.codingThinkingLevel,
-            codingAvailableThinkingLevels: message.codingAvailableThinkingLevels,
+            roles: message.roles,
           }));
           break;
         case "text_delta":
         case "thinking_delta": {
-          const ids = message.type === "text_delta" ? textIdsRef.current : thinkingIdsRef.current;
+          const idRef = message.type === "text_delta" ? textIdRef : thinkingIdRef;
           const role = message.type === "text_delta" ? "assistant" : "thinking";
-          updatePair(message.pairId, (pair) => {
-            const existingId = ids.get(message.pairId);
-            const index = existingId
-              ? pair.messages.findIndex((item) => item.id === existingId)
+          updateState((current) => {
+            const index = idRef.current
+              ? current.messages.findIndex((item) => item.id === idRef.current)
               : -1;
             if (index >= 0) {
-              const messages = [...pair.messages];
+              const messages = [...current.messages];
               const item = messages[index]!;
               messages[index] = { ...item, text: item.text + message.delta };
-              return { ...pair, messages };
+              return { ...current, messages };
             }
             const id = `${message.promptId}-${role}-${randomId()}`;
-            ids.set(message.pairId, id);
-            return { ...pair, messages: [...pair.messages, { id, role, text: message.delta }] };
+            idRef.current = id;
+            return {
+              ...current,
+              messages: [...current.messages, { id, role, text: message.delta }],
+            };
           });
           break;
         }
         case "tool_start":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
+          updateState((current) => ({
+            ...current,
             messages: [
-              ...pair.messages,
+              ...current.messages,
               {
                 id: message.toolCallId,
                 role: "tool",
@@ -268,13 +198,13 @@ export const useAgentSocket = (url: string): AgentChat => {
           }));
           break;
         case "tool_end":
-          updatePair(message.pairId, (pair) => {
+          updateState((current) => {
             const result =
               typeof message.result === "string" ? message.result : JSON.stringify(message.result);
             const text = `${message.isError ? "failed" : "done"} ${message.toolName}: ${result.length > 300 ? `${result.slice(0, 300)}…` : result}`;
             return {
-              ...pair,
-              messages: pair.messages.map((item) =>
+              ...current,
+              messages: current.messages.map((item) =>
                 item.toolCallId === message.toolCallId
                   ? { ...item, text, isError: message.isError }
                   : item,
@@ -282,67 +212,59 @@ export const useAgentSocket = (url: string): AgentChat => {
             };
           });
           break;
+        // Turn boundary only: `main_state` is the sole authority on busy, because
+        // the main agent may continue straight into a queued subagent-result turn.
         case "prompt_done":
-          textIdsRef.current.delete(message.pairId);
-          thinkingIdsRef.current.delete(message.pairId);
-          updatePair(message.pairId, (pair) => ({ ...pair, busy: false }));
+          textIdRef.current = null;
+          thinkingIdRef.current = null;
           break;
         case "main_state":
-          updatePair(message.pairId, (pair) => ({ ...pair, busy: message.busy }));
+          updateState((current) => ({ ...current, busy: message.busy }));
           break;
-        case "coding_status_start":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
-            codingRuns: [
-              ...pair.codingRuns.filter((run) => run.runId !== message.runId),
-              {
-                runId: message.runId,
-                title: message.title,
-                steps: [message.text],
-                status: "running",
-                anchor: message.anchor,
-              },
+        case "run_update":
+          updateState((current) => {
+            const known = current.runs.some((run) => run.runId === message.runId);
+            if (!known) {
+              return {
+                ...current,
+                runs: [
+                  ...current.runs,
+                  {
+                    runId: message.runId,
+                    title: message.title ?? message.runId,
+                    steps: [message.text],
+                    status: message.status,
+                    anchor: message.anchor ?? { x: 0, y: 0 },
+                  },
+                ],
+              };
+            }
+            return {
+              ...current,
+              runs: current.runs.map((run) =>
+                run.runId === message.runId
+                  ? {
+                      ...run,
+                      status: message.status,
+                      steps:
+                        run.steps.at(-1) === message.text
+                          ? run.steps
+                          : [...run.steps, message.text],
+                    }
+                  : run,
+              ),
+            };
+          });
+          break;
+        case "error":
+          updateState((current) => ({
+            ...current,
+            messages: [
+              ...current.messages,
+              { id: randomId(), role: "system", text: `error: ${message.message}` },
             ],
           }));
           break;
-        case "coding_status_update":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
-            codingRuns: pair.codingRuns.map((run) =>
-              run.runId === message.runId && run.steps.at(-1) !== message.text
-                ? { ...run, steps: [...run.steps, message.text] }
-                : run,
-            ),
-          }));
-          break;
-        case "coding_status_end":
-          updatePair(message.pairId, (pair) => ({
-            ...pair,
-            codingRuns: pair.codingRuns.map((run) =>
-              run.runId === message.runId
-                ? {
-                    ...run,
-                    steps:
-                      run.steps.at(-1) === message.text ? run.steps : [...run.steps, message.text],
-                    status: message.isError ? "error" : "done",
-                  }
-                : run,
-            ),
-          }));
-          break;
-        case "error": {
-          const pairId = message.pairId ?? activePairIdRef.current;
-          if (pairId)
-            updatePair(pairId, (pair) => ({
-              ...pair,
-              busy: message.promptId ? false : pair.busy,
-              messages: [
-                ...pair.messages,
-                { id: randomId(), role: "system", text: `error: ${message.message}` },
-              ],
-            }));
-          break;
-        }
         case "canvas_request": {
           const handler = canvasRequestHandlerRef.current;
           if (!handler) {
@@ -387,7 +309,6 @@ export const useAgentSocket = (url: string): AgentChat => {
             });
           break;
         }
-        case "ready":
         case "pong":
           break;
       }
@@ -398,99 +319,35 @@ export const useAgentSocket = (url: string): AgentChat => {
       socket.close();
       wsRef.current = null;
     };
-  }, [url, flushLogs, logEvent, sendRaw, updatePair]);
+  }, [url, flushLogs, logEvent, sendRaw, updateState]);
 
-  const activePair = activePairId ? (pairStates[activePairId] ?? null) : null;
-  const withActivePair = useCallback(
-    (build: (pairId: string) => ClientMessage): void => {
-      if (activePairId) sendRaw(build(activePairId));
-    },
-    [activePairId, sendRaw],
-  );
   const send = useCallback(
     (text: string, anchor: CanvasAnchor): void => {
       const trimmed = text.trim();
-      if (!activePairId || !trimmed) return;
+      if (!trimmed) return;
       const promptId = randomId();
-      updatePair(activePairId, (pair) => ({
-        ...pair,
+      updateState((current) => ({
+        ...current,
         busy: true,
-        messages: [...pair.messages, { id: promptId, role: "user", text: trimmed }],
+        messages: [...current.messages, { id: promptId, role: "user", text: trimmed }],
       }));
-      sendRaw({ type: "prompt", pairId: activePairId, id: promptId, text: trimmed, anchor });
+      sendRaw({ type: "prompt", id: promptId, text: trimmed, anchor });
     },
-    [activePairId, sendRaw, updatePair],
-  );
-  const setCanvasModel = useCallback(
-    (selection: Pick<Model<Api>, "provider" | "id">) =>
-      withActivePair((pairId) => ({
-        type: "set_canvas_model",
-        pairId,
-        provider: selection.provider,
-        modelId: selection.id,
-      })),
-    [withActivePair],
-  );
-  const setCodingModel = useCallback(
-    (selection: Pick<Model<Api>, "provider" | "id">) =>
-      withActivePair((pairId) => ({
-        type: "set_coding_model",
-        pairId,
-        provider: selection.provider,
-        modelId: selection.id,
-      })),
-    [withActivePair],
-  );
-  const setCanvasThinking = useCallback(
-    (level: ModelThinkingLevel) =>
-      withActivePair((pairId) => ({ type: "set_canvas_thinking", pairId, level })),
-    [withActivePair],
-  );
-  const setCodingThinking = useCallback(
-    (level: ModelThinkingLevel) =>
-      withActivePair((pairId) => ({ type: "set_coding_thinking", pairId, level })),
-    [withActivePair],
-  );
-  const summaries = useMemo(
-    () => Object.values(pairStates).map(({ id, actor, busy }) => ({ id, actor, busy })),
-    [pairStates],
+    [sendRaw, updateState],
   );
 
   return {
     ready,
-    busy: activePair?.busy ?? false,
-    pairs: summaries,
-    activePairId,
-    activePair,
-    messages: activePair?.messages ?? [],
-    codingRuns: activePair?.codingRuns ?? [],
-    models: activePair?.models ?? [],
-    currentModel: activePair?.currentCanvasModel ?? null,
-    currentCanvasModel: activePair?.currentCanvasModel ?? null,
-    currentCodingModel: activePair?.currentCodingModel ?? null,
-    thinkingLevel: activePair?.canvasThinkingLevel ?? "off",
-    availableThinkingLevels: activePair?.canvasAvailableThinkingLevels ?? ["off"],
-    canvasThinkingLevel: activePair?.canvasThinkingLevel ?? "off",
-    canvasAvailableThinkingLevels: activePair?.canvasAvailableThinkingLevels ?? ["off"],
-    codingThinkingLevel: activePair?.codingThinkingLevel ?? "off",
-    codingAvailableThinkingLevels: activePair?.codingAvailableThinkingLevels ?? ["off"],
-    selectPair: setActivePairId,
-    createPair: () => sendRaw({ type: "create_pair" }),
-    removePair: (pairId) => sendRaw({ type: "remove_pair", pairId }),
-    dismissCodingRun: (runId) => {
-      if (!activePairId) return;
-      updatePair(activePairId, (pair) => ({
-        ...pair,
-        codingRuns: pair.codingRuns.filter((run) => run.runId !== runId),
-      }));
-    },
+    ...state,
+    dismissRun: (runId) =>
+      updateState((current) => ({
+        ...current,
+        runs: current.runs.filter((run) => run.runId !== runId),
+      })),
     send,
-    setModel: setCanvasModel,
-    setCanvasModel,
-    setCodingModel,
-    setThinking: setCanvasThinking,
-    setCanvasThinking,
-    setCodingThinking,
+    setModel: (role, selection) =>
+      sendRaw({ type: "set_model", role, provider: selection.provider, modelId: selection.id }),
+    setThinking: (role, level) => sendRaw({ type: "set_thinking", role, level }),
     setCanvasRequestHandler,
   };
 };

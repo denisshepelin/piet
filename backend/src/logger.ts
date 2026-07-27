@@ -6,13 +6,12 @@ const MAX_STRING_LENGTH = 2_000;
 const MAX_DEPTH = 12;
 
 export type LogSource = "backend" | "web";
-export type LogAgent = "canvas" | "coding";
+export type LogAgent = "main" | "research";
 
 export type LogRecord = {
   ts: string;
   source: LogSource;
   connId: string;
-  pairId?: string;
   agent?: LogAgent;
   event: string;
   data?: unknown;
@@ -98,7 +97,6 @@ export const subscribeSessionLogging = (
   session: AgentSession,
   agent: LogAgent,
   connId: string,
-  pairId: string,
   logEvent: LogEvent,
 ): (() => void) =>
   session.subscribe((event) => {
@@ -106,7 +104,6 @@ export const subscribeSessionLogging = (
     logEvent({
       source: "backend",
       connId,
-      pairId,
       agent,
       event: `agent.${event.type}`,
       data: sessionEventData(event),

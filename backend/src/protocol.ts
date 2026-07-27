@@ -236,12 +236,6 @@ export type CanvasActor = {
   color: string;
 };
 
-export type AgentPairSummary = {
-  id: string;
-  actor: CanvasActor;
-  busy: boolean;
-};
-
 export type CanvasRequestParams = CanvasRequest["params"];
 
 export type CanvasRequest =
@@ -327,17 +321,35 @@ export type CanvasResponse =
   | { type: "canvas_response"; requestId: string; ok: true; result: CanvasToolResult }
   | { type: "canvas_response"; requestId: string; ok: false; error: string };
 
-export type CodingStatusMessage =
-  | {
-      type: "coding_status_start";
-      pairId: string;
-      runId: string;
-      title: string;
-      text: string;
-      anchor: CanvasAnchor;
-    }
-  | { type: "coding_status_update"; pairId: string; runId: string; text: string }
-  | { type: "coding_status_end"; pairId: string; runId: string; text: string; isError: boolean };
+export type RunStatus = "running" | "done" | "error";
+
+/**
+ * One message covers a subagent run's whole lifecycle. `title` and `anchor` are
+ * present only on the first update for a run, which creates its window.
+ */
+export type RunUpdateMessage = {
+  type: "run_update";
+  runId: string;
+  status: RunStatus;
+  text: string;
+  title?: string;
+  anchor?: CanvasAnchor;
+};
+
+export type AgentRole = "main" | "research";
+
+export type ModelRef = Pick<Model<Api>, "provider" | "id">;
+
+export type RoleModelState = {
+  current: ModelRef | null;
+  thinkingLevel: ModelThinkingLevel;
+  availableThinkingLevels: ModelThinkingLevel[];
+};
+
+export type AgentModelState = {
+  available: Model<Api>[];
+  roles: Record<AgentRole, RoleModelState>;
+};
 
 export type ClientLogEvent = {
   ts: string;
@@ -347,57 +359,20 @@ export type ClientLogEvent = {
 };
 
 export type ClientMessage =
-  | { type: "create_pair"; name?: string }
-  | { type: "remove_pair"; pairId: string }
-  | { type: "prompt"; pairId: string; id: string; text: string; anchor: CanvasAnchor }
-  | { type: "set_canvas_model"; pairId: string; provider: string; modelId: string }
-  | { type: "set_coding_model"; pairId: string; provider: string; modelId: string }
-  | { type: "set_canvas_thinking"; pairId: string; level: ModelThinkingLevel }
-  | { type: "set_coding_thinking"; pairId: string; level: ModelThinkingLevel }
+  | { type: "prompt"; id: string; text: string; anchor: CanvasAnchor }
+  | { type: "set_model"; role: AgentRole; provider: string; modelId: string }
+  | { type: "set_thinking"; role: AgentRole; level: ModelThinkingLevel }
   | { type: "client_log"; events: ClientLogEvent[] }
   | CanvasResponse
   | { type: "ping" };
 
 export type ServerMessage =
-  | { type: "ready" }
-  | { type: "pair_created"; pair: AgentPairSummary }
-  | { type: "pair_removed"; pairId: string }
-  | {
-      type: "models";
-      pairId: string;
-      available: Model<Api>[];
-      canvasCurrent: Pick<Model<Api>, "provider" | "id"> | null;
-      codingCurrent: Pick<Model<Api>, "provider" | "id"> | null;
-      canvasThinkingLevel: ModelThinkingLevel;
-      canvasAvailableThinkingLevels: ModelThinkingLevel[];
-      codingThinkingLevel: ModelThinkingLevel;
-      codingAvailableThinkingLevels: ModelThinkingLevel[];
-    }
-  | {
-      type: "model_changed";
-      pairId: string;
-      canvasCurrent: Pick<Model<Api>, "provider" | "id"> | null;
-      codingCurrent: Pick<Model<Api>, "provider" | "id"> | null;
-      changed: "canvas" | "coding";
-      canvasThinkingLevel: ModelThinkingLevel;
-      canvasAvailableThinkingLevels: ModelThinkingLevel[];
-      codingThinkingLevel: ModelThinkingLevel;
-      codingAvailableThinkingLevels: ModelThinkingLevel[];
-    }
-  | {
-      type: "thinking_changed";
-      pairId: string;
-      canvasThinkingLevel: ModelThinkingLevel;
-      canvasAvailableThinkingLevels: ModelThinkingLevel[];
-      codingThinkingLevel: ModelThinkingLevel;
-      codingAvailableThinkingLevels: ModelThinkingLevel[];
-      changed: "canvas" | "coding";
-    }
-  | { type: "text_delta"; pairId: string; promptId: string; delta: string }
-  | { type: "thinking_delta"; pairId: string; promptId: string; delta: string }
+  | { type: "ready"; actor: CanvasActor }
+  | ({ type: "model_state" } & AgentModelState)
+  | { type: "text_delta"; promptId: string; delta: string }
+  | { type: "thinking_delta"; promptId: string; delta: string }
   | {
       type: "tool_start";
-      pairId: string;
       promptId: string;
       toolCallId: string;
       toolName: string;
@@ -405,16 +380,15 @@ export type ServerMessage =
     }
   | {
       type: "tool_end";
-      pairId: string;
       promptId: string;
       toolCallId: string;
       toolName: string;
       result: unknown;
       isError: boolean;
     }
-  | { type: "prompt_done"; pairId: string; promptId: string }
-  | { type: "main_state"; pairId: string; busy: boolean }
-  | CodingStatusMessage
+  | { type: "prompt_done"; promptId: string }
+  | { type: "main_state"; busy: boolean }
+  | RunUpdateMessage
   | CanvasRequest
-  | { type: "error"; pairId?: string; promptId?: string; message: string }
+  | { type: "error"; promptId?: string; message: string }
   | { type: "pong" };

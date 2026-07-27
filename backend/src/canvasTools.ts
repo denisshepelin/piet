@@ -7,14 +7,11 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import type { CanvasBroker } from "./canvasBroker.js";
+import type { RequestCanvas } from "./canvasConnection.js";
 import type {
-  CanvasActor,
   CanvasLint,
-  CanvasRequest,
   CanvasScope,
   CanvasSnapshot,
-  CanvasToolResult,
   DeleteShapesResult,
   GetCanvasParams,
   MoveShapesResult,
@@ -297,13 +294,7 @@ const snapshotImageContent = (snapshot: CanvasSnapshot): ImageContent[] =>
 const lintLines = (lints: CanvasLint[] | undefined): string[] =>
   (lints ?? []).map((lint) => `Lint (${lint.kind}): ${lint.message}`);
 
-export const createCanvasTools = (broker: CanvasBroker, actor: CanvasActor) => {
-  const requestCanvas = <T extends CanvasToolResult>(
-    action: CanvasRequest["action"],
-    params: CanvasRequest["params"],
-    signal: AbortSignal | undefined,
-  ): Promise<T> => broker.request<T>(actor, action, params, signal);
-
+export const createCanvasTools = (requestCanvas: RequestCanvas) => {
   const getCanvasTool = defineTool({
     name: "get_canvas",
     label: "Get Canvas",

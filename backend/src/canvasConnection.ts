@@ -13,26 +13,34 @@ type PendingCanvasRequest = {
   cleanup: () => void;
 };
 
-type CanvasBrokerOptions = {
+type CanvasConnectionOptions = {
+  actor: CanvasActor;
   isConnected: () => boolean;
   send: (message: ServerMessage) => void;
   timeoutMs?: number;
 };
 
-export class CanvasBroker {
+export type RequestCanvas = <T extends CanvasToolResult>(
+  action: CanvasRequest["action"],
+  params: CanvasRequest["params"],
+  signal?: AbortSignal,
+) => Promise<T>;
+
+export class CanvasConnection {
+  readonly #actor: CanvasActor;
   readonly #pending = new Map<string, PendingCanvasRequest>();
   readonly #isConnected: () => boolean;
   readonly #send: (message: ServerMessage) => void;
   readonly #timeoutMs: number;
 
-  constructor({ isConnected, send, timeoutMs = 30_000 }: CanvasBrokerOptions) {
+  constructor({ actor, isConnected, send, timeoutMs = 30_000 }: CanvasConnectionOptions) {
+    this.#actor = actor;
     this.#isConnected = isConnected;
     this.#send = send;
     this.#timeoutMs = timeoutMs;
   }
 
   request<T extends CanvasToolResult>(
-    actor: CanvasActor,
     action: CanvasRequest["action"],
     params: CanvasRequest["params"],
     signal?: AbortSignal,
@@ -58,7 +66,13 @@ export class CanvasBroker {
         cleanup,
       });
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.#send({ type: "canvas_request", requestId, actor, action, params } as CanvasRequest);
+      this.#send({
+        type: "canvas_request",
+        requestId,
+        actor: this.#actor,
+        action,
+        params,
+      } as CanvasRequest);
     });
   }
 
@@ -73,7 +87,7 @@ export class CanvasBroker {
 
   dispose(): void {
     for (const requestId of this.#pending.keys()) {
-      this.#reject(requestId, new Error("canvas broker disconnected"));
+      this.#reject(requestId, new Error("canvas connection closed"));
     }
   }
 

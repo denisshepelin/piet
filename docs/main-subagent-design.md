@@ -1,6 +1,6 @@
 # Main agent and asynchronous subagents
 
-Status: proposed design for `main-subagent-division`
+Status: baseline topology implemented; advanced group scheduling, cancellation, and reconnect replay remain planned
 
 ## Decision summary
 
@@ -127,12 +127,12 @@ Default to one subagent. Fan out only when tasks are independent and their separ
 
 1. Browser captures an anchor and sends it with the prompt.
 2. Main agent calls `spawn_research` with one or more bounded tasks.
-3. Runtime creates a group and run records, starts sessions up to the concurrency limit, and emits `run_created`/`run_started`.
+3. Runtime creates run records, starts sessions up to the concurrency limit, and emits an opening `run_update` carrying the title and anchor. Group records are still planned.
 4. Browser places a run window near the captured anchor.
 5. The spawn tool immediately returns IDs to the main agent.
 6. Main agent acknowledges the background work and ends its turn.
-7. Subagents stream activity summaries directly to their run windows.
-8. Results enter the main mailbox. When the main session is idle, the runtime gives it a compact completion event.
+7. Subagents stream activity summaries directly to their run windows as further `run_update` messages.
+8. Results are queued as main-session turns and picked up as soon as the session frees.
 9. Main agent rereads the canvas, synthesizes the result, optionally changes the canvas, and answers the user.
 
 ### 3. User continues while work runs
@@ -312,37 +312,40 @@ A newer user request does not automatically make an older result stale. Results 
 
 Replace pair-oriented control messages with connection-level main-agent messages and run events.
 
-Client to server:
+Implemented, client to server:
 
 ```text
 prompt { id, text, anchor }
-cancel_group { groupId }
-cancel_run { runId }
-retry_run { runId }
-set_main_model { provider, modelId }
-set_research_model { provider, modelId }
-set_main_thinking { level }
-set_research_thinking { level }
+set_model { role, provider, modelId }
+set_thinking { role, level }
 canvas_response ...
 ```
 
-Server to client:
+Implemented, server to client:
 
 ```text
-main_state { state: idle | busy, queuedPromptCount }
+main_state { busy }
 text_delta / thinking_delta / tool_start / tool_end { promptId, ... }
 prompt_done { promptId }
-group_created { group }
-run_created { run }
-run_started { groupId, runId, sequence, at }
-run_activity { groupId, runId, sequence, at, text, toolName? }
-run_finished { groupId, runId, sequence, at, status, resultPreview?, error? }
-group_finished { groupId, status }
+model_state { available, roles: { main, research } }
+run_update { runId, status, text, title?, anchor? }
 canvas_request ...
-error { promptId?, groupId?, runId?, message }
+error { promptId?, message }
 ```
 
-`group_created` echoes the original prompt anchor so reconnect/replay can restore placement.
+Model and thinking settings are keyed by role rather than duplicated per agent, so one message and one setter cover both. One `run_update` covers a run's whole lifecycle; `title` and `anchor` appear only on the first update, which places the window.
+
+Still planned:
+
+```text
+cancel_group { groupId }
+cancel_run { runId }
+retry_run { runId }
+group_created { group }
+group_finished { groupId, status }
+```
+
+The group layer is not built. Runs are currently flat and identified only by `runId`, and events carry no `sequence`. `group_created` should echo the original prompt anchor so reconnect/replay can restore placement.
 
 ## Concurrency and limits
 
@@ -367,7 +370,7 @@ Subagents are read-only in the first version. If write-capable coding workers ar
 - A later persistent version should replay group/run snapshots after reconnect.
 - The main connection owns canvas request timeout and disconnect cleanup; `TldrawAgentBridge` owns mutation ordering and rollback.
 
-## Migration from pairs
+## Completed migration from pairs
 
 1. Rename the control-plane concept from pair to main connection state.
 2. Replace `AgentPairManager` with `MainAgentManager` and `SubagentRunRegistry`.

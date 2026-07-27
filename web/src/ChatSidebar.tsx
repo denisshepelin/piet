@@ -1,9 +1,10 @@
 import * as React from "react";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { useEditor } from "tldraw";
+import type { AgentRole, ModelRef } from "./protocol.ts";
 import type { AgentChat, ChatMessage } from "./useAgentSocket.ts";
 
-const { useEffect, useMemo, useRef, useState } = React;
+const { useEffect, useRef, useState } = React;
 type FormEvent<T> = React.FormEvent<T>;
 type ReactElement = React.ReactElement;
 type SyntheticEvent = React.SyntheticEvent;
@@ -21,7 +22,15 @@ const roleLabel = (role: ChatMessage["role"]): string => {
   return "system";
 };
 
-const encodeModel = (m: { provider: string; id: string }): string => `${m.provider}/${m.id}`;
+const encodeModel = (m: ModelRef): string => `${m.provider}/${m.id}`;
+
+const decodeModel = (value: string): ModelRef | null => {
+  const [provider, ...rest] = value.split("/");
+  const id = rest.join("/");
+  return provider && id ? { provider, id } : null;
+};
+
+const AGENT_ROLES: AgentRole[] = ["main", "research"];
 
 const selectStyle: React.CSSProperties = {
   flex: 1,
@@ -35,34 +44,73 @@ const selectStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
+const rowStyle: React.CSSProperties = { display: "flex", gap: 6, alignItems: "center" };
+
+const labelStyle: React.CSSProperties = { fontSize: 11, color: "#6b7280" };
+
+/** Model and thinking-level pickers for one agent role. */
+const RoleControls = ({ chat, role }: { chat: AgentChat; role: AgentRole }): ReactElement => {
+  const { current, thinkingLevel, availableThinkingLevels } = chat.roles[role];
+  const modelInfo = chat.models.find(
+    (model) => model.provider === current?.provider && model.id === current?.id,
+  );
+  const thinkingDisabled = !chat.ready || availableThinkingLevels.length <= 1;
+
+  return (
+    <>
+      <div style={rowStyle}>
+        <label style={{ ...labelStyle, width: 44 }}>{role}</label>
+        <select
+          value={current ? encodeModel(current) : ""}
+          onChange={(e) => {
+            const selection = decodeModel(e.target.value);
+            if (selection) chat.setModel(role, selection);
+          }}
+          disabled={!chat.ready || chat.models.length === 0}
+          style={selectStyle}
+        >
+          {current === null && (
+            <option value="" disabled>
+              {chat.models.length === 0 ? "no models available" : "select model"}
+            </option>
+          )}
+          {chat.models.map((m) => (
+            <option key={encodeModel(m)} value={encodeModel(m)}>
+              {m.name} ({m.provider})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div style={rowStyle}>
+        <label style={{ ...labelStyle, width: 72 }}>{role} think</label>
+        <select
+          value={thinkingLevel}
+          onChange={(e) => chat.setThinking(role, e.target.value as ModelThinkingLevel)}
+          disabled={thinkingDisabled}
+          style={{ ...selectStyle, cursor: thinkingDisabled ? "not-allowed" : "pointer" }}
+          title={modelInfo && !modelInfo.reasoning ? `${role} model has no reasoning` : undefined}
+        >
+          {availableThinkingLevels.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+};
+
 export const ChatSidebar = ({ chat }: Props): ReactElement => {
   const editor = useEditor();
   const [input, setInput] = useState("");
   const [view, setView] = useState("main");
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => setView("main"), [chat.activePairId]);
-
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [chat.messages, chat.busy]);
-
-  const canvasModelInfo: Model<Api> | undefined = useMemo(() => {
-    if (!chat.currentCanvasModel) return undefined;
-    return chat.models.find(
-      (m) =>
-        m.provider === chat.currentCanvasModel?.provider && m.id === chat.currentCanvasModel?.id,
-    );
-  }, [chat.models, chat.currentCanvasModel]);
-
-  const codingModelInfo: Model<Api> | undefined = useMemo(() => {
-    if (!chat.currentCodingModel) return undefined;
-    return chat.models.find(
-      (m) =>
-        m.provider === chat.currentCodingModel?.provider && m.id === chat.currentCodingModel?.id,
-    );
-  }, [chat.models, chat.currentCodingModel]);
 
   const onSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
@@ -81,15 +129,6 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
     setInput("");
   };
 
-  const onModelChange = (target: "canvas" | "coding", value: string): void => {
-    const [provider, ...rest] = value.split("/");
-    const id = rest.join("/");
-    if (!provider || !id) return;
-    const selection = { provider, id };
-    if (target === "canvas") chat.setCanvasModel(selection);
-    else chat.setCodingModel(selection);
-  };
-
   const markTldrawHandled = (e: SyntheticEvent): void => editor.markEventAsHandled(e);
 
   const onWheel = (e: WheelEvent<HTMLElement>): void => {
@@ -99,9 +138,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
 
   const status = chat.ready ? (chat.busy ? "thinking…" : "ready") : "disconnected";
   const statusColor = chat.ready ? (chat.busy ? "#d97706" : "#16a34a") : "#dc2626";
-  const canvasThinkingDisabled = !chat.ready || chat.canvasAvailableThinkingLevels.length <= 1;
-  const codingThinkingDisabled = !chat.ready || chat.codingAvailableThinkingLevels.length <= 1;
-  const selectedRun = chat.codingRuns.find((run) => run.runId === view);
+  const selectedRun = chat.runs.find((run) => run.runId === view);
 
   return (
     <aside
@@ -150,97 +187,14 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
               width: 10,
               height: 10,
               borderRadius: "50%",
-              background: chat.activePair?.actor.color ?? "#9ca3af",
+              background: chat.actor?.color ?? "#9ca3af",
             }}
           />
           <span style={{ fontSize: 12 }}>main agent with background subagents</span>
         </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>main</label>
-          <select
-            value={chat.currentCanvasModel ? encodeModel(chat.currentCanvasModel) : ""}
-            onChange={(e) => onModelChange("canvas", e.target.value)}
-            disabled={!chat.ready || chat.models.length === 0}
-            style={selectStyle}
-          >
-            {chat.currentCanvasModel === null && (
-              <option value="" disabled>
-                {chat.models.length === 0 ? "no models available" : "select model"}
-              </option>
-            )}
-            {chat.models.map((m) => (
-              <option key={encodeModel(m)} value={encodeModel(m)}>
-                {m.name} ({m.provider})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 44 }}>research</label>
-          <select
-            value={chat.currentCodingModel ? encodeModel(chat.currentCodingModel) : ""}
-            onChange={(e) => onModelChange("coding", e.target.value)}
-            disabled={!chat.ready || chat.models.length === 0}
-            style={selectStyle}
-          >
-            {chat.currentCodingModel === null && (
-              <option value="" disabled>
-                {chat.models.length === 0 ? "no models available" : "select model"}
-              </option>
-            )}
-            {chat.models.map((m) => (
-              <option key={encodeModel(m)} value={encodeModel(m)}>
-                {m.name} ({m.provider})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>main think</label>
-          <select
-            value={chat.canvasThinkingLevel}
-            onChange={(e) => chat.setCanvasThinking(e.target.value as ModelThinkingLevel)}
-            disabled={canvasThinkingDisabled}
-            style={{
-              ...selectStyle,
-              cursor: canvasThinkingDisabled ? "not-allowed" : "pointer",
-            }}
-            title={
-              canvasModelInfo && !canvasModelInfo.reasoning
-                ? "canvas model has no reasoning"
-                : undefined
-            }
-          >
-            {chat.canvasAvailableThinkingLevels.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <label style={{ fontSize: 11, color: "#6b7280", width: 72 }}>research think</label>
-          <select
-            value={chat.codingThinkingLevel}
-            onChange={(e) => chat.setCodingThinking(e.target.value as ModelThinkingLevel)}
-            disabled={codingThinkingDisabled}
-            style={{
-              ...selectStyle,
-              cursor: codingThinkingDisabled ? "not-allowed" : "pointer",
-            }}
-            title={
-              codingModelInfo && !codingModelInfo.reasoning
-                ? "coding model has no reasoning"
-                : undefined
-            }
-          >
-            {chat.codingAvailableThinkingLevels.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </div>
+        {AGENT_ROLES.map((role) => (
+          <RoleControls key={role} chat={chat} role={role} />
+        ))}
       </header>
 
       <nav
@@ -260,7 +214,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
         >
           main {chat.busy ? "●" : ""}
         </button>
-        {chat.codingRuns.map((run) => (
+        {chat.runs.map((run) => (
           <button
             key={run.runId}
             type="button"
@@ -316,7 +270,7 @@ export const ChatSidebar = ({ chat }: Props): ReactElement => {
                 <button
                   type="button"
                   onClick={() => {
-                    chat.dismissCodingRun(selectedRun.runId);
+                    chat.dismissRun(selectedRun.runId);
                     setView("main");
                   }}
                 >
