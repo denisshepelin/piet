@@ -1,34 +1,49 @@
 import { randomUUID } from "node:crypto";
-import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+  clampThinkingLevel,
+  getSupportedThinkingLevels,
+  type Api,
+  type ImageContent,
+  type Model,
+  type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import {
   SessionManager,
   createAgentSession,
   type AgentSession,
-  type AuthStorage,
   type DefaultResourceLoader,
-  type ModelRegistry,
+  type ModelRuntime,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { CanvasBroker } from "./canvasBroker.js";
 import { createCanvasTools } from "./canvasTools.js";
 import { createCodingAgentTool } from "./codingAgentTool.js";
 import { subscribeSessionLogging, type LogEvent } from "./logger.js";
-import type { AgentPairSummary, CanvasActor, ClientMessage, ServerMessage } from "./protocol.js";
+import type {
+  AgentPairSummary,
+  CanvasActor,
+  CanvasAnchor,
+  ClientMessage,
+  ServerMessage,
+} from "./protocol.js";
 
 type Pair = {
   id: string;
   actor: CanvasActor;
   canvasSession: AgentSession;
-  codingSession: AgentSession;
+  codingModel: Model<Api> | undefined;
+  codingThinkingLevel: ModelThinkingLevel;
   getPromptImages: (signal?: AbortSignal) => Promise<ImageContent[]>;
   busy: boolean;
   currentPromptId: string | null;
+  anchor: CanvasAnchor;
+  mailbox: string[];
+  drainingMailbox: boolean;
   dispose: () => void;
 };
 
 type AgentPairManagerOptions = {
-  authStorage: AuthStorage;
-  modelRegistry: ModelRegistry;
+  modelRuntime: ModelRuntime;
   settingsManager: SettingsManager;
   canvasResourceLoader: DefaultResourceLoader;
   codingResourceLoader: DefaultResourceLoader;
@@ -42,6 +57,9 @@ type AgentPairManagerOptions = {
 
 const ACTOR_COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#dc2626", "#0891b2"];
 const MAX_PAIRS = 8;
+
+const modelThinkingLevels = (model: Model<Api> | undefined): ModelThinkingLevel[] =>
+  model ? getSupportedThinkingLevels(model) : ["off"];
 
 export class AgentPairManager {
   readonly #pairs = new Map<string, Pair>();
@@ -64,8 +82,7 @@ export class AgentPairManager {
       color: ACTOR_COLORS[(number - 1) % ACTOR_COLORS.length]!,
     };
     const {
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       codingResourceLoader,
       canvasResourceLoader,
@@ -77,24 +94,40 @@ export class AgentPairManager {
       send,
     } = this.#options;
 
-    const { session: codingSession } = await createAgentSession({
-      sessionManager: SessionManager.inMemory(),
-      authStorage,
-      modelRegistry,
-      model: modelRegistry.find(defaultCodingModel.provider, defaultCodingModel.id),
-      tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-      settingsManager,
-      resourceLoader: codingResourceLoader,
-    });
-    const codingTool = createCodingAgentTool(id, codingSession, send);
+    let pair: Pair;
+    const codingTool = createCodingAgentTool(
+      id,
+      async () => {
+        const { session } = await createAgentSession({
+          sessionManager: SessionManager.inMemory(),
+          modelRuntime,
+          model: pair.codingModel,
+          thinkingLevel: pair.codingThinkingLevel,
+          tools: ["read", "bash", "grep", "find", "ls"],
+          settingsManager,
+          resourceLoader: codingResourceLoader,
+        });
+        return session;
+      },
+      send,
+      () => pair.anchor,
+      (result) => {
+        const outcome = result.error
+          ? `Subagent failed: ${result.error}`
+          : `Subagent result:\n${result.result}`;
+        pair.mailbox.push(
+          `<subagent_result run_id="${result.runId}" title="${result.title}">\n${outcome}\n</subagent_result>\n\nReview this result in the context of the conversation. Summarize it for the user and use canvas tools only if appropriate.`,
+        );
+        void this.#drainMailbox(pair);
+      },
+    );
     const canvasTools = createCanvasTools(canvasBroker, actor);
     let canvasSession: AgentSession;
     try {
       ({ session: canvasSession } = await createAgentSession({
         sessionManager: SessionManager.inMemory(),
-        authStorage,
-        modelRegistry,
-        model: modelRegistry.find(defaultCanvasModel.provider, defaultCanvasModel.id),
+        modelRuntime,
+        model: modelRuntime.getModel(defaultCanvasModel.provider, defaultCanvasModel.id),
         tools: [
           "get_canvas",
           "get_selection",
@@ -108,7 +141,7 @@ export class AgentPairManager {
           "delete_shapes",
           "move_shapes",
           "set_view",
-          "send_message",
+          "spawn_research",
         ],
         customTools: [...canvasTools.tools, codingTool.tool],
         settingsManager,
@@ -116,18 +149,21 @@ export class AgentPairManager {
       }));
     } catch (error) {
       codingTool.dispose();
-      codingSession.dispose();
       throw error;
     }
 
-    const pair: Pair = {
+    pair = {
       id,
       actor,
       canvasSession,
-      codingSession,
+      codingModel: modelRuntime.getModel(defaultCodingModel.provider, defaultCodingModel.id),
+      codingThinkingLevel: "off",
       getPromptImages: canvasTools.getPromptImages,
       busy: false,
       currentPromptId: null,
+      anchor: { x: 0, y: 0 },
+      mailbox: [],
+      drainingMailbox: false,
       dispose: () => undefined,
     };
     const unsubscribeEvents = canvasSession.subscribe((event) => this.#forwardEvent(pair, event));
@@ -138,26 +174,17 @@ export class AgentPairManager {
       id,
       logEvent,
     );
-    const unsubscribeCodingLog = subscribeSessionLogging(
-      codingSession,
-      "coding",
-      connId,
-      id,
-      logEvent,
-    );
     pair.dispose = () => {
       codingTool.dispose();
       unsubscribeEvents();
       unsubscribeCanvasLog();
-      unsubscribeCodingLog();
       canvasSession.dispose();
-      codingSession.dispose();
     };
 
     this.#pairs.set(id, pair);
     const summary = this.#summary(pair);
     send({ type: "pair_created", pair: summary });
-    this.#sendModels(pair);
+    await this.#sendModels(pair);
     return summary;
   }
 
@@ -175,7 +202,7 @@ export class AgentPairManager {
     const pair = this.#pairs.get(message.pairId);
     if (!pair) throw new Error(`unknown agent pair: ${message.pairId}`);
     if (message.type === "prompt") {
-      void this.#prompt(pair, message.id, message.text);
+      void this.#prompt(pair, message.id, message.text, message.anchor);
       return;
     }
     if (message.type === "set_canvas_model" || message.type === "set_coding_model") {
@@ -210,7 +237,7 @@ export class AgentPairManager {
     this.#pairs.clear();
   }
 
-  async #prompt(pair: Pair, promptId: string, text: string): Promise<void> {
+  async #prompt(pair: Pair, promptId: string, text: string, anchor: CanvasAnchor): Promise<void> {
     if (pair.busy) {
       this.#options.send({
         type: "error",
@@ -222,6 +249,7 @@ export class AgentPairManager {
     }
     pair.busy = true;
     pair.currentPromptId = promptId;
+    pair.anchor = anchor;
     try {
       let images: ImageContent[] | undefined;
       try {
@@ -243,6 +271,38 @@ export class AgentPairManager {
     } finally {
       pair.busy = false;
       pair.currentPromptId = null;
+      this.#options.send({ type: "main_state", pairId: pair.id, busy: false });
+      void this.#drainMailbox(pair);
+    }
+  }
+
+  async #drainMailbox(pair: Pair): Promise<void> {
+    if (pair.busy || pair.drainingMailbox || pair.mailbox.length === 0) return;
+    pair.drainingMailbox = true;
+    try {
+      const message = pair.mailbox.shift()!;
+      const promptId = `subagent-${randomUUID()}`;
+      pair.busy = true;
+      pair.currentPromptId = promptId;
+      this.#options.send({ type: "main_state", pairId: pair.id, busy: true });
+      try {
+        await pair.canvasSession.prompt(message);
+        this.#options.send({ type: "prompt_done", pairId: pair.id, promptId });
+      } catch (error) {
+        this.#options.send({
+          type: "error",
+          pairId: pair.id,
+          promptId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        pair.busy = false;
+        pair.currentPromptId = null;
+        this.#options.send({ type: "main_state", pairId: pair.id, busy: false });
+      }
+    } finally {
+      pair.drainingMailbox = false;
+      if (!pair.busy && pair.mailbox.length > 0) void this.#drainMailbox(pair);
     }
   }
 
@@ -252,9 +312,14 @@ export class AgentPairManager {
     provider: string,
     modelId: string,
   ): Promise<void> {
-    const model = this.#options.modelRegistry.find(provider, modelId);
+    const model = this.#options.modelRuntime.getModel(provider, modelId);
     if (!model) throw new Error(`unknown model: ${provider}/${modelId}`);
-    await (target === "coding" ? pair.codingSession : pair.canvasSession).setModel(model);
+    if (target === "coding") {
+      pair.codingModel = model;
+      pair.codingThinkingLevel = clampThinkingLevel(model, pair.codingThinkingLevel);
+    } else {
+      await pair.canvasSession.setModel(model);
+    }
     this.#options.send({
       type: "model_changed",
       pairId: pair.id,
@@ -264,23 +329,24 @@ export class AgentPairManager {
   }
 
   #setThinking(pair: Pair, target: "canvas" | "coding", level: ModelThinkingLevel): void {
-    (target === "coding" ? pair.codingSession : pair.canvasSession).setThinkingLevel(level);
+    if (target === "coding") pair.codingThinkingLevel = level;
+    else pair.canvasSession.setThinkingLevel(level);
     this.#options.send({
       type: "thinking_changed",
       pairId: pair.id,
       changed: target,
       canvasThinkingLevel: pair.canvasSession.thinkingLevel,
       canvasAvailableThinkingLevels: pair.canvasSession.getAvailableThinkingLevels(),
-      codingThinkingLevel: pair.codingSession.thinkingLevel,
-      codingAvailableThinkingLevels: pair.codingSession.getAvailableThinkingLevels(),
+      codingThinkingLevel: pair.codingThinkingLevel,
+      codingAvailableThinkingLevels: modelThinkingLevels(pair.codingModel),
     });
   }
 
-  #sendModels(pair: Pair): void {
+  async #sendModels(pair: Pair): Promise<void> {
     this.#options.send({
       type: "models",
       pairId: pair.id,
-      available: this.#options.modelRegistry.getAvailable(),
+      available: [...(await this.#options.modelRuntime.getAvailable())],
       ...this.#modelState(pair),
     });
   }
@@ -290,13 +356,13 @@ export class AgentPairManager {
       canvasCurrent: pair.canvasSession.model
         ? { provider: pair.canvasSession.model.provider, id: pair.canvasSession.model.id }
         : null,
-      codingCurrent: pair.codingSession.model
-        ? { provider: pair.codingSession.model.provider, id: pair.codingSession.model.id }
+      codingCurrent: pair.codingModel
+        ? { provider: pair.codingModel.provider, id: pair.codingModel.id }
         : null,
       canvasThinkingLevel: pair.canvasSession.thinkingLevel,
       canvasAvailableThinkingLevels: pair.canvasSession.getAvailableThinkingLevels(),
-      codingThinkingLevel: pair.codingSession.thinkingLevel,
-      codingAvailableThinkingLevels: pair.codingSession.getAvailableThinkingLevels(),
+      codingThinkingLevel: pair.codingThinkingLevel,
+      codingAvailableThinkingLevels: modelThinkingLevels(pair.codingModel),
     };
   }
 

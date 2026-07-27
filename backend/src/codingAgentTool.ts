@@ -1,16 +1,36 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type AgentSession } from "@earendil-works/pi-coding-agent";
-import type { ServerMessage } from "./protocol.js";
+import type { CanvasAnchor, ServerMessage } from "./protocol.js";
 
-const MAX_STEP_LENGTH = 64;
+const MAX_STEP_LENGTH = 96;
+const MAX_TASKS = 4;
+const MAX_ACTIVE_RUNS = 8;
+const MAX_RESULT_LENGTH = 20_000;
 
-type SendStatus = (msg: ServerMessage) => void;
+type SendStatus = (message: ServerMessage) => void;
 
-type ActiveCodingRun = {
+type ResearchTask = {
+  title: string;
+  instruction: string;
+  expectedOutput?: string;
+};
+
+type ResearchResult = {
   runId: string;
+  title: string;
+  task: string;
+  result?: string;
+  error?: string;
+};
+
+type ActiveRun = {
+  runId: string;
+  title: string;
   assistantText: string;
   summary: string;
+  session: AgentSession;
+  unsubscribe: () => void;
 };
 
 const truncateStep = (text: string): string =>
@@ -27,7 +47,7 @@ const summarizeToolUse = (toolName: string, args: unknown): string => {
     const command = (argString(args, "command") ?? "").replace(/\s+/g, " ").trim();
     return truncateStep(`$ ${command}`);
   }
-  if (toolName === "read" || toolName === "edit" || toolName === "write" || toolName === "ls") {
+  if (["read", "edit", "write", "ls"].includes(toolName)) {
     return truncateStep(`${toolName} ${argString(args, "path") ?? ""}`.trim());
   }
   if (toolName === "grep" || toolName === "find") {
@@ -38,71 +58,41 @@ const summarizeToolUse = (toolName: string, args: unknown): string => {
 
 export const createCodingAgentTool = (
   pairId: string,
-  codingSession: AgentSession,
+  createSession: () => Promise<AgentSession>,
   sendStatus: SendStatus,
+  getAnchor: () => CanvasAnchor,
+  onResult: (result: ResearchResult) => void,
 ) => {
-  let activeRun: ActiveCodingRun | null = null;
-  let queue = Promise.resolve();
+  const activeRuns = new Map<string, ActiveRun>();
+  let disposed = false;
+  let inFlightRuns = 0;
 
-  const setSummary = (summary: string): void => {
-    if (!activeRun || activeRun.summary === summary) return;
-    activeRun.summary = summary;
-    sendStatus({ type: "coding_status_update", pairId, runId: activeRun.runId, text: summary });
+  const setSummary = (run: ActiveRun, summary: string): void => {
+    if (run.summary === summary) return;
+    run.summary = summary;
+    sendStatus({ type: "coding_status_update", pairId, runId: run.runId, text: summary });
   };
 
-  const unsubscribe = codingSession.subscribe((event) => {
-    if (!activeRun) return;
-
-    if (event.type === "message_update") {
-      const ame = event.assistantMessageEvent;
-      if (ame.type === "text_delta") {
-        activeRun.assistantText += ame.delta;
-        setSummary("drafting result…");
-      } else if (ame.type === "thinking_delta") {
-        setSummary("thinking…");
-      }
-      return;
-    }
-
-    if (event.type === "tool_execution_start") {
-      setSummary(summarizeToolUse(event.toolName, event.args));
-      return;
-    }
-
-    if (event.type === "tool_execution_end" && event.isError) {
-      setSummary(truncateStep(`${event.toolName} failed`));
-    }
-  });
-
-  const runDelegatedTask = async (
+  const startRun = async (
     runId: string,
-    task: string,
-    signal: AbortSignal | undefined,
-  ): Promise<string> => {
-    if (signal?.aborted) throw new Error("coding task was cancelled");
-
-    const run: ActiveCodingRun = { runId, assistantText: "", summary: "starting…" };
-    activeRun = run;
+    task: ResearchTask,
+    anchor: CanvasAnchor,
+  ): Promise<void> => {
     sendStatus({
       type: "coding_status_start",
       pairId,
       runId,
-      title: "coding agent",
-      text: run.summary,
+      title: task.title,
+      text: "starting…",
+      anchor,
     });
 
-    const onAbort = (): void => {
-      void codingSession.abort();
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
+    let session: AgentSession;
     try {
-      await codingSession.prompt(task);
-      const result = run.assistantText.trim() || "Coding agent completed without a text result.";
-      sendStatus({ type: "coding_status_end", pairId, runId, text: "done", isError: false });
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      session = await createSession();
+    } catch (error) {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : String(error);
       sendStatus({
         type: "coding_status_end",
         pairId,
@@ -110,55 +100,132 @@ export const createCodingAgentTool = (
         text: truncateStep(`failed: ${message}`),
         isError: true,
       });
-      throw err;
+      onResult({ runId, title: task.title, task: task.instruction, error: message });
+      return;
+    }
+
+    if (disposed) {
+      session.dispose();
+      return;
+    }
+
+    const run: ActiveRun = {
+      runId,
+      title: task.title,
+      assistantText: "",
+      summary: "starting…",
+      session,
+      unsubscribe: () => undefined,
+    };
+    run.unsubscribe = session.subscribe((event) => {
+      if (event.type === "message_update") {
+        const update = event.assistantMessageEvent;
+        if (update.type === "text_delta") {
+          run.assistantText += update.delta;
+          setSummary(run, "drafting result…");
+        } else if (update.type === "thinking_delta") {
+          setSummary(run, "reasoning…");
+        }
+      } else if (event.type === "tool_execution_start") {
+        setSummary(run, summarizeToolUse(event.toolName, event.args));
+      } else if (event.type === "tool_execution_end" && event.isError) {
+        setSummary(run, truncateStep(`${event.toolName} failed`));
+      }
+    });
+    activeRuns.set(runId, run);
+
+    const expected = task.expectedOutput ? `\n\nExpected output: ${task.expectedOutput}` : "";
+    try {
+      await session.prompt(`${task.instruction}${expected}`);
+      if (disposed) return;
+      const fullResult = run.assistantText.trim() || "Research completed without a text result.";
+      const result =
+        fullResult.length <= MAX_RESULT_LENGTH
+          ? fullResult
+          : `${fullResult.slice(0, MAX_RESULT_LENGTH)}\n\n[Result truncated]`;
+      sendStatus({
+        type: "coding_status_end",
+        pairId,
+        runId,
+        text: result,
+        isError: false,
+      });
+      onResult({ runId, title: task.title, task: task.instruction, result });
+    } catch (error) {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : String(error);
+      sendStatus({
+        type: "coding_status_end",
+        pairId,
+        runId,
+        text: `failed: ${message}`,
+        isError: true,
+      });
+      onResult({ runId, title: task.title, task: task.instruction, error: message });
     } finally {
-      signal?.removeEventListener("abort", onAbort);
-      activeRun = null;
+      activeRuns.delete(runId);
+      run.unsubscribe();
+      session.dispose();
     }
   };
 
-  const enqueue = <T>(work: () => Promise<T>): Promise<T> => {
-    const run = queue.then(work, work);
-    queue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  };
-
   const tool = defineTool({
-    name: "send_message",
-    label: "Send Message",
+    name: "spawn_research",
+    label: "Spawn Research",
     description:
-      "Delegate a coding or repository task to the coding agent. Use this for code reading, experiments, edits, tests, or anything that would require coding-agent tools. The coding agent cannot write to the canvas.",
-    promptSnippet: "Send a task to the coding agent and wait for its result.",
+      "Start independent repository subagents in the background. Returns immediately so you can finish your turn and remain available to the user. Results will be delivered to you later.",
+    promptSnippet: "Spawn bounded repository research tasks without waiting for their results.",
     promptGuidelines: [
-      "Use send_message when a task requires codebase inspection, editing files, running commands, trying implementation options, or verifying tests.",
-      "Include the relevant canvas context and the concrete expected result in the message.",
-      "After send_message returns, decide what, if anything, should be placed on the canvas using canvas tools.",
+      "Use spawn_research for repository inspection, read-only commands, comparisons, or analysis that can proceed independently.",
+      "Use one task by default. Fan out only when tasks are independent.",
+      "Tell the user that the work is running in the background, then finish your turn.",
+      "Do not claim a result before the runtime delivers it in a later message.",
     ],
     parameters: Type.Object({
-      message: Type.String({
-        description:
-          "The complete task for the coding agent, including necessary canvas context and expected output.",
-      }),
+      tasks: Type.Array(
+        Type.Object({
+          title: Type.String({ description: "Short label for the subagent tab." }),
+          instruction: Type.String({ description: "Complete, bounded task for the subagent." }),
+          expectedOutput: Type.Optional(Type.String()),
+        }),
+        { minItems: 1, maxItems: MAX_TASKS },
+      ),
     }),
-    async execute(_toolCallId, params, signal) {
-      const task = params.message.trim();
-      if (task.length === 0) throw new Error("send_message requires a non-empty message");
-
-      const runId = randomUUID();
-      const result = await enqueue(() => runDelegatedTask(runId, task, signal));
-
+    async execute(_toolCallId, params) {
+      if (disposed) throw new Error("subagent runtime is disposed");
+      if (inFlightRuns + params.tasks.length > MAX_ACTIVE_RUNS) {
+        throw new Error(`at most ${MAX_ACTIVE_RUNS} subagent runs may be active`);
+      }
+      const runs = params.tasks.map((task) => ({ runId: randomUUID(), task }));
+      const anchor = getAnchor();
+      inFlightRuns += runs.length;
+      for (const { runId, task } of runs) {
+        void startRun(runId, task, anchor).finally(() => {
+          inFlightRuns -= 1;
+        });
+      }
       return {
-        content: [{ type: "text", text: `Coding agent result:\n${result}` }],
-        details: { runId, result },
+        content: [
+          {
+            type: "text",
+            text: `${runs.length} background subagent${runs.length === 1 ? "" : "s"} started. Finish this turn without waiting; results will arrive automatically.`,
+          },
+        ],
+        details: { runs: runs.map(({ runId, task }) => ({ runId, title: task.title })) },
       };
     },
   });
 
   return {
     tool,
-    dispose: unsubscribe,
+    dispose: (): void => {
+      disposed = true;
+      for (const run of activeRuns.values()) {
+        run.unsubscribe();
+        void run.session.abort();
+        run.session.dispose();
+      }
+      activeRuns.clear();
+    },
   };
 };
