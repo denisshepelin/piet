@@ -4,7 +4,6 @@ import { defineTool, type AgentSession } from "@earendil-works/pi-coding-agent";
 import type { CanvasAnchor, RunStatus, ServerMessage } from "./protocol.js";
 
 const MAX_STEP_LENGTH = 96;
-const MAX_TASKS = 4;
 const MAX_ACTIVE_RUNS = 8;
 const MAX_RESULT_LENGTH = 20_000;
 
@@ -147,53 +146,44 @@ export const createSubagentTool = ({
     name: "spawn_research",
     label: "Spawn Research",
     description:
-      "Start independent repository subagents in the background. Returns immediately so you can finish your turn and remain available to the user. Results will be delivered to you later.",
-    promptSnippet: "Spawn bounded repository research tasks without waiting for their results.",
+      "Start one repository research run in the background. Returns immediately so you can finish your turn and remain available to the user. The result will be delivered to you later.",
+    promptSnippet: "Spawn one bounded repository research run without waiting for its result.",
     promptGuidelines: [
       "Use spawn_research for repository inspection, read-only commands, comparisons, or analysis that can proceed independently.",
-      "Use one task by default. Fan out only when tasks are independent.",
+      "Fan out only when tasks are independent, using one spawn_research call per task.",
       "Tell the user that the work is running in the background, then finish your turn.",
       "Do not claim a result before the runtime delivers it in a later message.",
     ],
     parameters: Type.Object({
-      tasks: Type.Array(
-        Type.Object({
-          title: Type.String({ description: "Short label for the subagent tab." }),
-          instruction: Type.String({ description: "Complete, bounded task for the subagent." }),
-          expectedOutput: Type.Optional(Type.String()),
-        }),
-        { minItems: 1, maxItems: MAX_TASKS },
-      ),
+      title: Type.String({ description: "Short label for the subagent tab." }),
+      instruction: Type.String({ description: "Complete, bounded task for the subagent." }),
+      expectedOutput: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, task) {
       if (disposed) throw new Error("subagent runtime is disposed");
-      if (activeRuns.size + params.tasks.length > MAX_ACTIVE_RUNS) {
+      if (activeRuns.size >= MAX_ACTIVE_RUNS) {
         throw new Error(`at most ${MAX_ACTIVE_RUNS} subagent runs may be active`);
       }
-      const anchor = getAnchor();
-      const started = params.tasks.map((task) => {
-        const run: ActiveRun = {
-          runId: randomUUID(),
-          title: task.title,
-          anchor,
-          assistantText: "",
-          summary: "starting…",
-          unsubscribe: () => undefined,
-        };
-        activeRuns.set(run.runId, run);
-        return { run, task };
-      });
 
-      for (const { run, task } of started) void startRun(run, task);
+      const run: ActiveRun = {
+        runId: randomUUID(),
+        title: task.title,
+        anchor: getAnchor(),
+        assistantText: "",
+        summary: "starting…",
+        unsubscribe: () => undefined,
+      };
+      activeRuns.set(run.runId, run);
+      void startRun(run, task);
 
       return {
         content: [
           {
             type: "text",
-            text: `${started.length} background subagent${started.length === 1 ? "" : "s"} started. Finish this turn without waiting; results will arrive automatically.`,
+            text: "Background research started. Finish this turn without waiting; the result will arrive automatically.",
           },
         ],
-        details: { runs: started.map(({ run }) => ({ runId: run.runId, title: run.title })) },
+        details: { runId: run.runId, title: run.title },
       };
     },
   });

@@ -26,7 +26,7 @@ The boundaries are:
 4. `subagentTool.ts` implements non-blocking `spawn_research`. Each task gets an isolated in-memory session with read-only repository tools and no canvas access.
 5. `index.ts` creates the model runtime, settings, and resource loaders once per process, then one `CanvasConnection` and one `MainAgentManager` per browser connection. Settings and context files are read at startup, so changing them needs a backend restart.
 
-The main agent can start up to four independent tasks in one tool call and immediately finish its turn, with at most eight runs active. Subagent lifecycle events stream directly to movable canvas windows. Terminal results are queued behind any turn already in flight and picked up as soon as the main session frees.
+Each `spawn_research` call starts one independent run and returns immediately, with at most eight runs active. The main agent can fan out with multiple tool calls in one turn. Subagent lifecycle events stream directly to movable canvas windows. Terminal results are queued behind any turn already in flight and picked up as soon as the main session frees.
 
 ## Collaboration and conflicts
 
