@@ -39,12 +39,13 @@ const collect = () => {
 /** spawn_research ignores execute's signal/onUpdate/ctx parameters, so the test omits them. */
 type SpawnResearch = (
   toolCallId: string,
-  params: { tasks: { title: string; instruction: string }[] },
+  params: { title: string; instruction: string },
 ) => Promise<unknown>;
 
-const spawn = (tool: ReturnType<typeof createSubagentTool>["tool"], titles: string[]) =>
+const spawn = (tool: ReturnType<typeof createSubagentTool>["tool"], title: string) =>
   (tool.execute as unknown as SpawnResearch)("call-1", {
-    tasks: titles.map((title) => ({ title, instruction: `do ${title}` })),
+    title,
+    instruction: `do ${title}`,
   });
 
 test("reports a run through one message type and inherits the spawn anchor", async () => {
@@ -69,7 +70,7 @@ test("reports a run through one message type and inherits the spawn anchor", asy
     onResult: sink.onResult,
   });
 
-  await spawn(subagent.tool, ["scan"]);
+  await spawn(subagent.tool, "scan");
   await new Promise((resolve) => setImmediate(resolve));
 
   const first = sink.updates.at(0)!;
@@ -105,7 +106,7 @@ test("reports a failed run as an error update and a result with no text", async 
     onResult: sink.onResult,
   });
 
-  await spawn(subagent.tool, ["scan"]);
+  await spawn(subagent.tool, "scan");
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(sink.updates.at(-1)!.status, "error");
@@ -130,15 +131,16 @@ test("counts active runs against the concurrency cap without a separate counter"
     onResult: sink.onResult,
   });
 
-  await spawn(subagent.tool, ["a", "b", "c", "d"]);
-  await spawn(subagent.tool, ["e", "f", "g", "h"]);
-  await assert.rejects(spawn(subagent.tool, ["i"]), /at most 8 subagent runs/);
+  await Promise.all(
+    ["a", "b", "c", "d", "e", "f", "g", "h"].map((title) => spawn(subagent.tool, title)),
+  );
+  await assert.rejects(spawn(subagent.tool, "i"), /at most 8 subagent runs/);
 
   release();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
   // Terminal runs free their slots, so the cap admits new work again.
-  await spawn(subagent.tool, ["i"]);
+  await spawn(subagent.tool, "i");
   release();
 });

@@ -1,6 +1,6 @@
 # Main agent and asynchronous subagents
 
-Status: baseline topology implemented; advanced group scheduling, cancellation, and reconnect replay remain planned
+Status: baseline topology implemented; advanced run scheduling, cancellation, and reconnect replay remain planned
 
 ## Decision summary
 
@@ -70,7 +70,7 @@ This removes the broker abstraction while keeping the small amount of coordinati
 - Resolves ambiguity and decides what findings are relevant.
 - Performs final canvas mutations after rereading current state.
 - Receives subagent results through a mailbox.
-- May launch multiple independent subagents for one request, subject to a budget.
+- May launch multiple independent subagents for one request, subject to a budget. Each subagent is an independent run.
 
 ### Research subagent
 
@@ -97,22 +97,20 @@ The delegation tool is non-blocking:
 
 ```ts
 type SpawnResearchInput = {
-  tasks: Array<{
-    title: string;
-    instruction: string;
-    expectedOutput?: string;
-  }>;
+  title: string;
+  instruction: string;
+  expectedOutput?: string;
 };
 
 type SpawnResearchResult = {
-  groupId: string;
-  runs: Array<{ runId: string; title: string }>;
+  runId: string;
+  title: string;
 };
 ```
 
-`spawn_research` creates the runs and returns their IDs immediately. It must not await subagent completion. This lets the main turn acknowledge the work and finish, making the main session available for another user prompt.
+`spawn_research` creates one run and returns its ID immediately. It must not await subagent completion. This lets the main turn acknowledge the work and finish, making the main session available for another user prompt.
 
-Default to one subagent. Fan out only when tasks are independent and their separate results reduce latency or context pressure. A request is a **group**; each delegated task is a **run**.
+Default to one subagent. Fan out only when tasks are independent and their separate results reduce latency or context pressure, using one `spawn_research` call per task. Each delegated task is an independent **run**.
 
 ## Interaction flows
 
@@ -121,15 +119,15 @@ Default to one subagent. Fan out only when tasks are independent and their separ
 1. Browser captures the prompt's canvas anchor and sends the prompt.
 2. Main agent reads canvas context if needed.
 3. Main agent answers and may use canvas tools directly.
-4. No group or run window is created.
+4. No run window is created.
 
 ### 2. Complex request
 
 1. Browser captures an anchor and sends it with the prompt.
-2. Main agent calls `spawn_research` with one or more bounded tasks.
-3. Runtime creates run records, starts sessions up to the concurrency limit, and emits an opening `run_update` carrying the title and anchor. Group records are still planned.
-4. Browser places a run window near the captured anchor.
-5. The spawn tool immediately returns IDs to the main agent.
+2. Main agent calls `spawn_research` once for each bounded task.
+3. Each call creates one run, starts its session subject to the concurrency limit, and emits an opening `run_update` carrying its title and anchor.
+4. Browser places a separate run window near the captured anchor.
+5. Each spawn call immediately returns a run ID to the main agent.
 6. Main agent acknowledges the background work and ends its turn.
 7. Subagents stream activity summaries directly to their run windows as further `run_update` messages.
 8. Results are queued as main-session turns and picked up as soon as the session frees.
@@ -141,40 +139,39 @@ Default to one subagent. Fan out only when tasks are independent and their separ
 - Chat input stays enabled while subagents run.
 - Main-agent turns are serialized because one `AgentSession` cannot process simultaneous prompts.
 - A new user prompt starts immediately when the main session is idle; otherwise it is visibly queued.
-- The new prompt may take the direct path or create another independent group and run window.
+- The new prompt may take the direct path or create more independent runs and run windows.
 - A subagent completion never interrupts an active user turn. It waits in the mailbox.
 
 This gives responsiveness without pretending the one main model can execute two turns concurrently.
 
 ### 4. Follow-up or redirection
 
-A follow-up is attached to a group only when the user explicitly targets its run window or references the group. The main agent can then:
+A follow-up targets a run only when the user explicitly targets its window or references the run. The main agent can then:
 
 - answer without changing the run;
-- cancel and replace one run;
-- add another run to the group;
-- update the group's presentation title.
+- cancel and replace the run;
+- start another independent run.
 
 Do not silently inject arbitrary new chat into an already-running subagent. Its original task remains an immutable audit record; changed intent creates a replacement run.
 
 ### 5. Completion
 
-- The run window changes to `done`, `partial`, or `failed` as soon as the runtime knows.
+- The run window changes to `done`, `failed`, or `cancelled` as soon as the runtime knows.
 - The card may show the final handoff before the main agent responds.
-- The main response is linked to the originating group.
+- The main response is linked to the originating run.
 - After synthesis, the window collapses but remains reopenable until dismissed.
 
 ### 6. Cancellation
 
-The user can cancel a run or its whole group from the window. Cancellation:
+The user can cancel a run from its window. Cancellation:
 
-1. aborts active child sessions;
-2. removes queued children;
+1. aborts the active subagent session;
+2. removes the run from the queue if it has not started;
 3. rejects future events except the terminal cancellation event;
 4. leaves already-delivered research visible;
 5. does not roll back unrelated canvas edits.
 
-Since first-version children cannot mutate the canvas, cancellation has no canvas rollback problem.
+Since first-version research runs cannot mutate the canvas, cancellation has no canvas rollback problem.
 
 ## Anchored run windows
 
@@ -191,47 +188,44 @@ Use the first available source:
 3. most recent canvas pointer position;
 4. viewport center.
 
-Store both the page point and optional source shape IDs on the prompt. The group inherits that immutable anchor.
+Store both the page point and optional source shape IDs on the prompt. Every run spawned during that prompt inherits the immutable anchor.
 
 Agent-created shapes are excluded by checking `meta.piet.actor`. A short recency window can be used for user edits; stale activity falls back to selection or viewport center.
 
 ### Placement
 
-- Place the first group window to the right of its anchor with a fixed page-space gap.
+- Place each run window to the right of its anchor with a fixed page-space gap.
 - Avoid covering the anchor bounds.
 - Resolve overlap with existing windows using deterministic vertical lanes, then a small spiral search.
 - Keep the assigned position stable while a run is active.
 - Convert page coordinates to screen coordinates on pan/zoom.
 - If off-screen, show an edge indicator; selecting it pans to the window.
-- Multiple runs in one group appear as rows in one window, not separate floating windows.
+- Every run has its own window. Runs spawned together are not aggregated.
 
 ### Window content and controls
 
 Collapsed:
 
-- group title;
-- aggregate state and elapsed time;
-- count such as `2 running · 1 done`;
+- run title;
+- state and elapsed time;
 - cancel button.
 
 Expanded:
 
-- one row per run;
 - state: `queued | running | done | failed | cancelled`;
 - latest concise activity, such as `grep CanvasRequest` or `read backend/src/index.ts`;
 - final handoff preview;
-- cancel/retry per run;
+- cancel/retry controls;
 - link to the resulting main-agent message.
 
 Do not display hidden chain-of-thought. Thinking events may map to the generic label `reasoning` without forwarding their text.
 
 ## Context and result envelopes
 
-A child starts from a deliberately small immutable envelope:
+A research run starts from a deliberately small immutable envelope:
 
 ```ts
 type ResearchTaskEnvelope = {
-  groupId: string;
   runId: string;
   parentPromptId: string;
   title: string;
@@ -245,7 +239,7 @@ type ResearchTaskEnvelope = {
 };
 ```
 
-Do not clone the full main-agent history. The main agent must include facts needed by the child in `instruction` or the canvas summary. This preserves isolation and avoids leaking irrelevant conversation.
+Do not clone the full main-agent history. The main agent must include facts needed by the run in `instruction` or the canvas summary. This preserves isolation and avoids leaking irrelevant conversation.
 
 Subagents return a structured handoff:
 
@@ -272,24 +266,15 @@ queued -> running -> completed
 queued ----------> cancelled
 ```
 
-Group state is derived:
-
-- `running`: any child is queued/running;
-- `completed`: all children completed;
-- `partial`: terminal mix with at least one completion and one failure/cancellation;
-- `failed`: all terminal children failed;
-- `cancelled`: all terminal children cancelled.
-
-Each event carries `groupId`, `runId`, monotonically increasing `sequence`, and timestamp. The browser ignores duplicate or out-of-order events.
+Each event carries `runId`, a monotonically increasing `sequence`, and a timestamp. The browser ignores duplicate or out-of-order events.
 
 ## Main-agent mailbox
 
-The mailbox decouples child completion from main-agent availability.
+The mailbox decouples run completion from main-agent availability.
 
 ```ts
 type MailboxItem = {
   id: string;
-  groupId: string;
   runId: string;
   parentPromptId: string;
   status: "completed" | "failed" | "cancelled";
@@ -302,8 +287,8 @@ Delivery policy:
 
 1. UI lifecycle events are emitted immediately.
 2. Mailbox items accumulate while the main agent is streaming.
-3. When idle, coalesce terminal items for the same group.
-4. Prompt the main session with a clearly marked runtime event and instruct it to synthesize or wait for remaining required runs.
+3. When idle, deliver terminal items in FIFO order.
+4. Prompt the main session with a clearly marked runtime event and instruct it to synthesize the run result.
 5. Mark items delivered only after the main session accepts the event.
 
 A newer user request does not automatically make an older result stale. Results are scoped by `parentPromptId`; the main agent decides relevance. Explicit replacement or cancellation marks old runs superseded and prevents automatic synthesis.
@@ -338,14 +323,11 @@ Model and thinking settings are keyed by role rather than duplicated per agent, 
 Still planned:
 
 ```text
-cancel_group { groupId }
 cancel_run { runId }
 retry_run { runId }
-group_created { group }
-group_finished { groupId, status }
 ```
 
-The group layer is not built. Runs are currently flat and identified only by `runId`, and events carry no `sequence`. `group_created` should echo the original prompt anchor so reconnect/replay can restore placement.
+Runs are identified by `runId`; events do not yet carry `sequence`. Reconnect/replay should restore each run's latest snapshot, including its original prompt anchor.
 
 ## Concurrency and limits
 
@@ -354,20 +336,19 @@ Initial limits:
 - one main session per browser connection;
 - at most 8 non-terminal runs;
 - at most 4 running subagent sessions;
-- at most 4 tasks in one spawn call;
 - no nested spawning;
 - per-run timeout and output-size cap;
-- FIFO scheduling across groups, with tasks from one group not occupying every slot when other groups are queued.
+- FIFO scheduling across runs.
 
 Subagents are read-only in the first version. If write-capable coding workers are introduced later, use isolated git worktrees or a single write lease; never let multiple sessions edit the same worktree concurrently by default.
 
 ## Failure and reconnect behavior
 
-- A child failure is data for the main agent, not a connection-level failure.
+- A run failure is data for the main agent, not a connection-level failure.
 - Partial results remain usable.
-- Disconnect aborts in-memory main and child sessions in the first version.
+- Disconnect aborts the in-memory main session and all active run sessions in the first version.
 - The browser keeps terminal cards already received until reload.
-- A later persistent version should replay group/run snapshots after reconnect.
+- A later persistent version should replay run snapshots after reconnect.
 - The main connection owns canvas request timeout and disconnect cleanup; `TldrawAgentBridge` owns mutation ordering and rollback.
 
 ## Completed migration from pairs
@@ -378,9 +359,9 @@ Subagents are read-only in the first version. If write-capable coding workers ar
 4. Make canvas tools depend on a request function rather than `CanvasBroker`, then remove `canvasBroker.ts`.
 5. Replace blocking `send_message` with non-blocking `spawn_research`.
 6. Create a fresh subagent session per run rather than retaining one paired coding session.
-7. Replace `pairId` protocol scoping with `promptId`, `groupId`, and `runId`.
+7. Replace `pairId` protocol scoping with `promptId` and `runId`.
 8. Remove pair creation/selection/removal UI.
-9. Replace the global coding status panel with anchored group windows.
+9. Replace the global coding status panel with anchored run windows.
 10. Keep canvas tools, actor metadata, and the serialized editor mutation queue.
 
 ## Suggested implementation slices
@@ -392,9 +373,9 @@ Subagents are read-only in the first version. If write-capable coding workers ar
 - Lifecycle events and mailbox delivery.
 - No anchored UI yet; show runs in the existing status panel.
 
-### Slice 2: parallel groups
+### Slice 2: parallel runs
 
-- Multiple tasks per group.
+- Multiple independent `spawn_research` calls in one main-agent turn.
 - Scheduler, cancellation, partial failure, and tests.
 
 ### Slice 3: canvas anchoring
@@ -410,9 +391,9 @@ Subagents are read-only in the first version. If write-capable coding workers ar
 
 1. A simple question produces no run and gets a normal main-agent answer.
 2. A repository question creates a run window near the submission-time canvas anchor and the main agent becomes available after acknowledging it.
-3. While that run executes, the user can draw and submit a second question that creates a separately anchored group.
+3. While that run executes, the user can draw and submit a second question that creates separately anchored runs.
 4. Activity appears in the correct window even when two runs emit events concurrently.
 5. A completed result waits while the main agent handles another prompt, then is synthesized afterward.
-6. Cancelling one group does not affect another group or the canvas.
-7. A failed child yields a visible failed row and the main agent can still use successful sibling results.
+6. Cancelling one run does not affect another run or the canvas.
+7. A failed run remains visible and the main agent can still use results from other successful runs.
 8. Subagent progress and result content never appear in canvas snapshots unless the main agent deliberately writes them to the canvas.
