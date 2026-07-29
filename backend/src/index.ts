@@ -11,10 +11,8 @@ import { MainAgentManager } from "./mainAgentManager.js";
 import { MAIN_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createEventLog } from "./logger.js";
 import type { ClientMessage, ServerMessage } from "./protocol.js";
-import { startSyncServer } from "./syncServer.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
-const SYNC_PORT = Number(process.env.SYNC_PORT ?? 8788);
 const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "opencode-go";
 const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "minimax-m3";
 const DEFAULT_RESEARCH_MODEL_PROVIDER =
@@ -53,7 +51,6 @@ const researchResourceLoader = new DefaultResourceLoader({
 await Promise.all([mainResourceLoader.reload(), researchResourceLoader.reload()]);
 
 const wss = new WebSocketServer({ port: PORT });
-startSyncServer(SYNC_PORT);
 
 const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));

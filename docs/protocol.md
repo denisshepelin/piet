@@ -28,11 +28,9 @@ The boundaries are:
 
 Each `spawn_research` call starts one independent run and returns immediately, with at most eight runs active. The main agent can fan out with multiple tool calls in one turn. Subagent lifecycle events stream directly to movable canvas windows. Terminal results are queued behind any turn already in flight and picked up as soon as the main session frees.
 
-## Collaboration and conflicts
+## Canvas ownership and conflicts
 
-The backend starts a tldraw sync server on `SYNC_PORT` (default `8788`). The web app connects to `VITE_SYNC_URL` (default `ws://localhost:8788/connect/piet`) through `useSync`.
-
-There is exactly one `TLSocketRoom` per room id. It is the authoritative document-sync layer and provides tldraw reconnection, presence, and conflict reconciliation. Rooms use `InMemorySyncStorage`, so restarting the backend clears them. Assets use tldraw's inline base64 store for local development.
+The browser owns one local tldraw document, persisted under the `piet` browser storage key. There is no collaboration or document-sync server. The control WebSocket carries agent events and canvas requests only; the canvas document never leaves the browser through that channel except as curated snapshots and action results.
 
 Main-agent canvas mutations are serialized at the editor boundary. Each mutation starts with a tldraw history mark; failures call `bailToMark`, rolling back that request. Created and changed shapes carry `meta.piet.actor` with the main actor identity. Research subagents cannot mutate the canvas.
 
@@ -85,5 +83,5 @@ The curated actions are `get_canvas`, `put_shape`, `put_mermaid`, `put_image`, `
 - Agent control WebSocket reconnect still requires a page reload.
 - Protocol types are mirrored manually between backend and web.
 - Main and subagent sessions are in-memory and are disposed when their browser connection closes.
-- Sync rooms and assets are development-grade and in-memory/inline.
+- Canvas persistence is local to the browser profile and is not shared across devices or users.
 - The visible editor serializes canvas writes while repository research runs in parallel.
