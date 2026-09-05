@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { WebSocketServer, type WebSocket } from "ws";
+import type { WebSocket } from "ws";
+import { createCanvasSocketServer } from "./canvasSocketServer.js";
 import {
   DefaultResourceLoader,
   ModelRuntime,
@@ -8,9 +9,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CanvasConnection } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
-import { MAIN_SYSTEM_PROMPT } from "./mainPrompt.js";
+import { MAIN_SYSTEM_PROMPT, CANVAS_WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createEventLog } from "./logger.js";
-import type { ClientMessage, ServerMessage } from "./protocol.js";
+import { parseClientMessage, type ServerMessage } from "@piet/protocol";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "opencode-go";
@@ -48,9 +49,24 @@ const researchResourceLoader = new DefaultResourceLoader({
   settingsManager,
   appendSystemPromptOverride: (base) => [...base, RESEARCH_SYSTEM_APPENDIX],
 });
-await Promise.all([mainResourceLoader.reload(), researchResourceLoader.reload()]);
+const canvasResourceLoader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  settingsManager,
+  noExtensions: true,
+  noSkills: true,
+  noPromptTemplates: true,
+  noContextFiles: true,
+  systemPromptOverride: () => CANVAS_WORKER_SYSTEM_PROMPT,
+  appendSystemPrompt: [],
+});
+await Promise.all([
+  mainResourceLoader.reload(),
+  researchResourceLoader.reload(),
+  canvasResourceLoader.reload(),
+]);
 
-const wss = new WebSocketServer({ port: PORT });
+const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
 
 const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
@@ -58,7 +74,6 @@ const send = (socket: WebSocket, message: ServerMessage): void => {
 
 const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>([
   "text_delta",
-  "thinking_delta",
   "tool_start",
   "tool_end",
 ]);
@@ -87,6 +102,7 @@ wss.on("connection", async (socket) => {
     settingsManager,
     mainResourceLoader,
     researchResourceLoader,
+    canvasResourceLoader,
     requestCanvas: canvasConnection.request.bind(canvasConnection),
     defaultMainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
     defaultResearchModel: {
@@ -98,23 +114,13 @@ wss.on("connection", async (socket) => {
     send: sendToClient,
   });
 
-  try {
-    await mainAgent.initialize();
-  } catch (error) {
-    sendToClient({
-      type: "error",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-
   socket.on("message", async (raw) => {
-    let message: ClientMessage;
-    try {
-      message = JSON.parse(raw.toString()) as ClientMessage;
-    } catch (error) {
-      sendToClient({ type: "error", message: `invalid JSON: ${String(error)}` });
+    const parsed = parseClientMessage(raw.toString());
+    if (!parsed.ok) {
+      sendToClient({ type: "error", message: parsed.error.message });
       return;
     }
+    const message = parsed.value;
 
     if (message.type === "ping") {
       sendToClient({ type: "pong" });
@@ -154,6 +160,17 @@ wss.on("connection", async (socket) => {
     canvasConnection.dispose();
     mainAgent.dispose();
   });
+
+  try {
+    await mainAgent.initialize();
+  } catch (error) {
+    mainAgent.dispose();
+    canvasConnection.dispose();
+    sendToClient({
+      type: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 console.log(`[ws] listening on ws://localhost:${PORT}`);

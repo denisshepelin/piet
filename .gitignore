@@ -6,3 +6,6 @@ backend/logs/
 .vite
 .env
 .env.local
+*.tsbuildinfo
+web/test-results/
+web/playwright-report/

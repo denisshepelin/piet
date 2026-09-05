@@ -1,87 +1,75 @@
-# Piet architecture and protocol
+# Piet control protocol
 
-Piet is a canvas-first agent app with three explicit layers. The browser owns the live tldraw `Editor`; the backend owns agent sessions and never evaluates arbitrary editor scripts.
+The browser owns tldraw; the backend owns conversation and worker sessions. The WebSocket is a control channel, not a replicated document store.
 
-## Architecture
+## Source of truth
 
-```text
-browser
-  TldrawAgentBridge ── curated canvas actions + request rollback
-          │
-          │ canvas_request / canvas_response
-          ▼
-backend CanvasConnection ── pending requests, timeout, abort
-          │
-          ▼
-  MainAgentManager ── one long-lived, canvas-enabled main session
-          │
-          └── spawn_research ── temporary, canvas-blind subagent sessions
-```
+`shared/src/canvasProtocol.ts` in `@piet/protocol` owns schemas and inferred types. Both socket boundaries parse messages. Canvas parameter and result types derive from one action map; successful responses are also checked against the action of their pending request.
 
-The boundaries are:
+Run `pnpm build` to build packages in dependency order. `pnpm dev` starts protocol compilation, backend, and web development servers. `pnpm test` runs deterministic tests; `pnpm test:browser` exercises the real tldraw UI against a recording WebSocket peer without model credentials.
 
-1. `canvasConnection.ts` matches canvas requests and responses for one main actor and handles timeout, abort, and disconnect.
-2. `canvasTools.ts` exposes the curated model-facing canvas API. There is no arbitrary `canvas.exec` tool.
-3. `mainAgentManager.ts` owns the main session, model settings, and the serial turn queue that carries both user prompts and delivered subagent results.
-4. `subagentTool.ts` implements non-blocking `spawn_research`. Each task gets an isolated in-memory session with read-only repository tools and no canvas access.
-5. `index.ts` creates the model runtime, settings, and resource loaders once per process, then one `CanvasConnection` and one `MainAgentManager` per browser connection. Settings and context files are read at startup, so changing them needs a backend restart.
+## Browser to backend
 
-Each `spawn_research` call starts one independent run and returns immediately, with at most eight runs active. The main agent can fan out with multiple tool calls in one turn. Subagent lifecycle events stream directly to movable canvas windows. Terminal results are queued behind any turn already in flight and picked up as soon as the main session frees.
-
-## Canvas ownership and conflicts
-
-The browser owns one local tldraw document, persisted under the `piet` browser storage key. There is no collaboration or document-sync server. The control WebSocket carries agent events and canvas requests only; the canvas document never leaves the browser through that channel except as curated snapshots and action results.
-
-Main-agent canvas mutations are serialized at the editor boundary. Each mutation starts with a tldraw history mark; failures call `bailToMark`, rolling back that request. Created and changed shapes carry `meta.piet.actor` with the main actor identity. Research subagents cannot mutate the canvas.
-
-## Agent WebSocket protocol
-
-The control WebSocket listens on `PORT` (default `8787`). Shared TypeScript definitions are in `backend/src/protocol.ts` and mirrored in `web/src/protocol.ts`.
-
-Client messages:
-
-- `prompt { id, text, anchor: { x, y } }`
+- `prompt { id, text, canvasContext }`
+- `cancel_run { runId }`
+- `retry_run { runId }`
 - `set_model { role, provider, modelId }`
 - `set_thinking { role, level }`
-- `canvas_response { requestId, ok, result | error }`
+- `canvas_response { requestId, ok: true, result }`
+- `canvas_response { requestId, ok: false, error }`
 - `client_log { events }`
 - `ping`
 
-Server messages:
+`canvasContext` captures the originating page, viewport, selection, anchor, and optional style profile. Shape summaries may contain record fingerprints for edit preconditions. Coordinates are always page-space. The input adapter captures context once regardless of whether the intent originates from typing or a future voice transcript.
+
+## Backend to browser
 
 - `ready { actor }`
-- `model_state { available, roles: { main, research } }`
+- `model_state { available, roles }`, with minimal UI model information and main/research role settings
 - `main_state { busy }`
-- `text_delta`, `thinking_delta`, `tool_start`, `tool_end`, `prompt_done`, scoped by `promptId`
-- `run_update { runId, status, text, title?, anchor? }`
-- `canvas_request { requestId, actor, action, params }`
+- `text_delta`, `tool_start`, `tool_end`, `prompt_done`, scoped by `promptId`
+- `run_update { run }`, containing a complete task snapshot
+- `canvas_request { requestId, actor, pageId, contextId, deadlineAt, action, params, expectedShapes?, style? }`
+- `canvas_cancel { requestId }`
 - `error { promptId?, message }`
 - `pong`
 
-`role` is `main` or `research`, and both roles carry the same `{ current, thinkingLevel, availableThinkingLevels }` shape, so one message and one setter cover both.
+Private model reasoning is not transported; task snapshots contain generic activity labels instead.
 
-A `run_update` carries `title` and `anchor` only on the first update for a run, which is what creates its window; later updates change `status` and append `text` as an activity step.
+## Task snapshots
 
-## Main-session turn queue
+Common fields: `runId`, `promptId`, `title`, `kind` (`response | research | canvas`), `pageId`, `anchor`, `createdAt`, `updatedAt`, `sequence`.
 
-The main `AgentSession` processes one turn at a time. Both user prompts and delivered subagent results are queued turns, so the mailbox and the prompt path are the same mechanism. `main_state { busy }` is emitted only on transitions and is the single authority on busy: the agent can finish a user turn and continue directly into a queued result turn, so `prompt_done` marks a turn boundary rather than idleness. Only a user prompt attaches a viewport render to its turn. A run inherits the anchor of the turn that spawned it, and a result turn reuses that anchor.
+State-specific fields:
 
-The browser captures the prompt anchor in page coordinates at submission time. Selection bounds are preferred, followed by the latest pointer position and viewport center. Subagent windows inherit this immutable anchor, follow canvas pan/zoom, and can be repositioned by the user.
+| Status              | Payload    |
+| ------------------- | ---------- |
+| `queued`, `running` | `activity` |
+| `done`              | `result`   |
+| `error`             | `error`    |
+| `cancelled`         | `reason`   |
+
+A terminal run never becomes active again; retry creates another run. The browser rejects stale/duplicate sequences, preserves completed results on disconnect, and ignores updates to dismissed terminal runs. History is bounded and in memory.
 
 ## Canvas request lifecycle
 
-1. A main-agent canvas tool asks `CanvasConnection` to perform an action.
-2. The connection allocates a request id and registers timeout and abort handling.
-3. `TldrawAgentBridge` serializes the request with other editor work.
-4. Mutations receive a history mark and actor metadata. On failure, the editor rolls back to the mark.
-5. The matching browser response resolves the pending promise.
+1. A tool or proposal finalizer submits a page-scoped action.
+2. `CanvasConnection` assigns request identity and deadline and records the expected result schema.
+3. The browser validates the request and prepares mutations in an isolated SDK editor; reads remain available while imports wait.
+4. Before a mutation, the executor checks page, deadline, cancellation, and relevant record fingerprints.
+5. The final synchronous change is one undoable commit; failed preparation leaves user edits intact.
+6. A validated response settles the pending request. Timeout, abort, or disconnect releases resources and sends cancellation when transport is available.
 
-The curated actions are `get_canvas`, `put_shape`, `put_mermaid`, `put_image`, `put_draw`, `put_highlight`, `put_line`, `update_shape`, `delete_shapes`, `move_shapes`, and `set_view`. `get_selection` is a main-agent convenience over `get_canvas` with selection scope.
+Late cancellation cannot undo an already committed change. There is no automatic retry of canvas mutations. A user-requested task retry starts fresh preparation; previously committed output remains.
 
-## Current limits
+Actions: `get_canvas`, `put_shape`, `put_shapes`, `put_mermaid`, `put_image`, `put_draw`, `put_highlight`, `put_line`, `update_shape`, `delete_shapes`, `move_shapes`, `set_view`.
 
-- Agent control WebSocket reconnect still requires a page reload.
-- Protocol types are mirrored manually between backend and web.
-- Main and subagent sessions are in-memory and are disposed when their browser connection closes.
-- Canvas persistence is local to the browser profile and is not shared across devices or users.
-- The visible editor serializes canvas writes while repository research runs in parallel.
+`get_canvas` accepts `includeImage: false` for fast structured context. `get_selection` is a model tool that reads submission-time selection locally. `set_view` is reserved for explicit navigation requests, not automatic background completion.
+
+## Local transport
+
+The agent socket binds to `127.0.0.1` and accepts only the local Vite development/preview origins (ports 5173 and 4173). Set `PIET_WEB_ORIGIN` to allow an additional trusted frontend origin, such as a different development port. Missing and foreign origins are rejected. This is a local development boundary, not authentication for a remotely exposed service. Research-worker shell permissions are unchanged.
+
+## Limits
+
+The document uses tldraw local persistence. Sessions/tasks do not survive backend restart or browser reload. A disconnected browser retains its received task results but must reload to reconnect. Switching away from a request's page causes a safe failure rather than a hidden page switch. Voice capture, durable task replay, and collaboration sync remain separate future work.

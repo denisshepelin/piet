@@ -1,353 +1,189 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type {
-  AgentRole,
-  CanvasActor,
-  CanvasAnchor,
-  CanvasRequest,
-  CanvasToolResult,
-  ClientLogEvent,
-  ClientMessage,
-  ModelRef,
-  RoleModelState,
-  RunStatus,
-  ServerMessage,
-} from "./protocol.ts";
+import {
+  parseServerMessage,
+  type AgentRole,
+  type CanvasRequest,
+  type CanvasToolResult,
+  type ClientLogEvent,
+  type ClientMessage,
+  type ModelRef,
+  type ModelThinkingLevel,
+  type PromptCanvasContext,
+  type RunSnapshot,
+} from "@piet/protocol";
+import {
+  createChatState,
+  disconnectChatState,
+  dismissChatRun,
+  reduceAgentMessage,
+  type ChatMessage,
+  type ChatState,
+} from "./agentChatState.ts";
 
-export type ChatRole = "user" | "assistant" | "system" | "thinking" | "tool";
-
-export type ChatMessage = {
-  id: string;
-  role: ChatRole;
-  text: string;
-  toolName?: string;
-  toolCallId?: string;
-  isError?: boolean;
-};
-
-export type CanvasRequestHandler = (request: CanvasRequest) => Promise<CanvasToolResult>;
-
-export type SubagentRun = {
-  runId: string;
-  title: string;
-  steps: string[];
-  status: RunStatus;
-  anchor: CanvasAnchor;
-};
-
-type ChatState = {
-  actor: CanvasActor | null;
-  busy: boolean;
-  messages: ChatMessage[];
-  runs: SubagentRun[];
-  models: Model<Api>[];
-  roles: Record<AgentRole, RoleModelState>;
-};
-
-export type AgentChat = ChatState & {
-  ready: boolean;
+export type { ChatMessage } from "./agentChatState.ts";
+/** Compatibility name for task windows; runs can represent research, drawing, or a response. */
+export type SubagentRun = RunSnapshot;
+/** Canvas execution receives connection/request cancellation, including disconnect during preparation. */
+export type CanvasRequestHandler = (
+  request: CanvasRequest,
+  signal?: AbortSignal,
+) => Promise<CanvasToolResult>;
+/** Input-independent conversation commands; canvas context is captured by the input adapter. */
+export type AgentChat = Omit<ChatState, "closedPrompts" | "dismissedRuns"> & {
   dismissRun: (runId: string) => void;
-  send: (text: string, anchor: CanvasAnchor) => void;
+  cancelRun: (runId: string) => void;
+  retryRun: (runId: string) => void;
+  send: (text: string, canvasContext: PromptCanvasContext) => void;
   setModel: (role: AgentRole, selection: ModelRef) => void;
   setThinking: (role: AgentRole, level: ModelThinkingLevel) => void;
   setCanvasRequestHandler: (handler: CanvasRequestHandler | null) => void;
 };
 
-const idleRole: RoleModelState = {
-  current: null,
-  thinkingLevel: "off",
-  availableThinkingLevels: ["off"],
-};
-
-const initialState: ChatState = {
-  actor: null,
-  busy: false,
-  messages: [],
-  runs: [],
-  models: [],
-  roles: { main: idleRole, research: idleRole },
-};
-
-const randomId = (): string =>
-  globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-const summarizeCanvasResult = (result: CanvasToolResult): unknown =>
-  "shapes" in result
-    ? {
-        scope: result.scope,
-        shapeCount: result.shapeCount,
-        returnedShapeCount: result.returnedShapeCount,
-        truncated: result.truncated,
-        hasImage: result.image !== undefined,
-      }
-    : result;
-
+/** Owns one control socket; losing it never clears the canvas or completed task results. */
 export const useAgentSocket = (url: string): AgentChat => {
-  const [ready, setReady] = useState(false);
-  const [state, setState] = useState<ChatState>(initialState);
+  const [state, setState] = useState(createChatState);
   const wsRef = useRef<WebSocket | null>(null);
-  const canvasRequestHandlerRef = useRef<CanvasRequestHandler | null>(null);
-  const textIdRef = useRef<string | null>(null);
-  const thinkingIdRef = useRef<string | null>(null);
-  const pendingLogsRef = useRef<ClientLogEvent[]>([]);
-  const logFlushTimerRef = useRef<number | null>(null);
-
-  const updateState = useCallback((update: (state: ChatState) => ChatState): void => {
-    setState(update);
-  }, []);
-
-  const sendRaw = useCallback((message: ClientMessage): void => {
-    const socket = wsRef.current;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
-  }, []);
-
-  const flushLogs = useCallback((): void => {
-    if (logFlushTimerRef.current !== null) clearTimeout(logFlushTimerRef.current);
-    logFlushTimerRef.current = null;
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN || pendingLogsRef.current.length === 0)
-      return;
-    const events = pendingLogsRef.current;
-    pendingLogsRef.current = [];
-    socket.send(JSON.stringify({ type: "client_log", events } satisfies ClientMessage));
-  }, []);
-
-  const logEvent = useCallback(
-    (event: string, data?: unknown, level: ClientLogEvent["level"] = "info"): void => {
-      pendingLogsRef.current.push({ ts: new Date().toISOString(), level, event, data });
-      if (logFlushTimerRef.current === null) {
-        logFlushTimerRef.current = window.setTimeout(flushLogs, 500);
-      }
-    },
-    [flushLogs],
-  );
-
+  const handlerRef = useRef<CanvasRequestHandler | null>(null);
   const setCanvasRequestHandler = useCallback((handler: CanvasRequestHandler | null): void => {
-    canvasRequestHandlerRef.current = handler;
+    handlerRef.current = handler;
+  }, []);
+  const sendRaw = useCallback((message: ClientMessage): boolean => {
+    const socket = wsRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
   }, []);
 
   useEffect(() => {
     const socket = new WebSocket(url);
     wsRef.current = socket;
-    socket.addEventListener("open", () => {
-      logEvent("web.ws_open");
-      flushLogs();
-    });
+    const pendingCanvas = new Map<string, AbortController>();
+    const pendingLogs: ClientLogEvent[] = [];
+    let logTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    const send = (message: ClientMessage): void => {
+      if (!disposed && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    };
+    const flushLogs = (): void => {
+      logTimer = undefined;
+      if (socket.readyState !== WebSocket.OPEN) return;
+      while (pendingLogs.length) send({ type: "client_log", events: pendingLogs.splice(0, 100) });
+    };
+    const log = (event: string, data?: unknown, level: ClientLogEvent["level"] = "info"): void => {
+      if (disposed) return;
+      if (pendingLogs.length >= 100) pendingLogs.shift();
+      pendingLogs.push({ ts: new Date().toISOString(), level, event, data });
+      logTimer ??= setTimeout(flushLogs, 500);
+    };
+    const abortCanvas = (): void => {
+      for (const controller of pendingCanvas.values()) controller.abort();
+      pendingCanvas.clear();
+    };
+    socket.addEventListener("open", () => log("web.ws_open"));
     socket.addEventListener("close", () => {
-      setReady(false);
-      updateState((current) => ({ ...current, busy: false, runs: [] }));
+      abortCanvas();
+      if (!disposed) setState((current) => disconnectChatState(current, Date.now()));
     });
-    socket.addEventListener("error", () => logEvent("web.ws_error", undefined, "error"));
-    socket.addEventListener("message", (event) => {
-      let message: ServerMessage;
-      try {
-        message = JSON.parse(event.data as string) as ServerMessage;
-      } catch (error) {
-        logEvent("web.ws_parse_error", { error: String(error) }, "error");
+    socket.addEventListener("error", () => log("web.ws_error", undefined, "error"));
+    socket.addEventListener("message", (event: MessageEvent<unknown>) => {
+      if (disposed || typeof event.data !== "string") return;
+      const parsed = parseServerMessage(event.data);
+      if (!parsed.ok) {
+        log(
+          "web.ws_parse_error",
+          { error: parsed.error.message, reason: parsed.error.reason },
+          "error",
+        );
         return;
       }
-
-      switch (message.type) {
-        case "ready":
-          setReady(true);
-          updateState((current) => ({ ...current, actor: message.actor }));
-          break;
-        case "model_state":
-          updateState((current) => ({
-            ...current,
-            models: message.available,
-            roles: message.roles,
-          }));
-          break;
-        case "text_delta":
-        case "thinking_delta": {
-          const idRef = message.type === "text_delta" ? textIdRef : thinkingIdRef;
-          const role = message.type === "text_delta" ? "assistant" : "thinking";
-          updateState((current) => {
-            const index = idRef.current
-              ? current.messages.findIndex((item) => item.id === idRef.current)
-              : -1;
-            if (index >= 0) {
-              const messages = [...current.messages];
-              const item = messages[index]!;
-              messages[index] = { ...item, text: item.text + message.delta };
-              return { ...current, messages };
-            }
-            const id = `${message.promptId}-${role}-${randomId()}`;
-            idRef.current = id;
-            return {
-              ...current,
-              messages: [...current.messages, { id, role, text: message.delta }],
-            };
-          });
-          break;
-        }
-        case "tool_start":
-          updateState((current) => ({
-            ...current,
-            messages: [
-              ...current.messages,
-              {
-                id: message.toolCallId,
-                role: "tool",
-                text: `${message.toolName}(...)`,
-                toolName: message.toolName,
-                toolCallId: message.toolCallId,
-              },
-            ],
-          }));
-          break;
-        case "tool_end":
-          updateState((current) => {
-            const result =
-              typeof message.result === "string" ? message.result : JSON.stringify(message.result);
-            const text = `${message.isError ? "failed" : "done"} ${message.toolName}: ${result.length > 300 ? `${result.slice(0, 300)}…` : result}`;
-            return {
-              ...current,
-              messages: current.messages.map((item) =>
-                item.toolCallId === message.toolCallId
-                  ? { ...item, text, isError: message.isError }
-                  : item,
-              ),
-            };
-          });
-          break;
-        // Turn boundary only: `main_state` is the sole authority on busy, because
-        // the main agent may continue straight into a queued subagent-result turn.
-        case "prompt_done":
-          textIdRef.current = null;
-          thinkingIdRef.current = null;
-          break;
-        case "main_state":
-          updateState((current) => ({ ...current, busy: message.busy }));
-          break;
-        case "run_update":
-          updateState((current) => {
-            const known = current.runs.some((run) => run.runId === message.runId);
-            if (!known) {
-              return {
-                ...current,
-                runs: [
-                  ...current.runs,
-                  {
-                    runId: message.runId,
-                    title: message.title ?? message.runId,
-                    steps: [message.text],
-                    status: message.status,
-                    anchor: message.anchor ?? { x: 0, y: 0 },
-                  },
-                ],
-              };
-            }
-            return {
-              ...current,
-              runs: current.runs.map((run) =>
-                run.runId === message.runId
-                  ? {
-                      ...run,
-                      status: message.status,
-                      steps:
-                        run.steps.at(-1) === message.text
-                          ? run.steps
-                          : [...run.steps, message.text],
-                    }
-                  : run,
-              ),
-            };
-          });
-          break;
-        case "error":
-          updateState((current) => ({
-            ...current,
-            messages: [
-              ...current.messages,
-              { id: randomId(), role: "system", text: `error: ${message.message}` },
-            ],
-          }));
-          break;
-        case "canvas_request": {
-          const handler = canvasRequestHandlerRef.current;
-          if (!handler) {
-            sendRaw({
-              type: "canvas_response",
-              requestId: message.requestId,
-              ok: false,
-              error: "tldraw editor is not ready",
-            });
-            break;
-          }
-          const startedAt = performance.now();
-          void handler(message)
-            .then((result) => {
-              logEvent("web.canvas_request_ok", {
-                requestId: message.requestId,
-                actor: message.actor.id,
-                action: message.action,
-                ms: Math.round(performance.now() - startedAt),
-                result: summarizeCanvasResult(result),
-              });
-              sendRaw({ type: "canvas_response", requestId: message.requestId, ok: true, result });
-            })
-            .catch((error: unknown) => {
-              const detail = error instanceof Error ? error.message : String(error);
-              logEvent(
-                "web.canvas_request_error",
-                {
-                  requestId: message.requestId,
-                  actor: message.actor.id,
-                  action: message.action,
-                  detail,
-                },
-                "error",
-              );
-              sendRaw({
-                type: "canvas_response",
-                requestId: message.requestId,
-                ok: false,
-                error: detail,
-              });
-            });
-          break;
-        }
-        case "pong":
-          break;
+      const message = parsed.value;
+      if (message.type === "canvas_cancel") {
+        pendingCanvas.get(message.requestId)?.abort();
+        return;
       }
+      if (message.type !== "canvas_request") {
+        setState((current) => reduceAgentMessage(current, message));
+        return;
+      }
+      const handler = handlerRef.current;
+      if (!handler) {
+        send({
+          type: "canvas_response",
+          requestId: message.requestId,
+          ok: false,
+          error: "Canvas editor is not ready",
+        });
+        return;
+      }
+      if (pendingCanvas.has(message.requestId)) return;
+      const controller = new AbortController();
+      pendingCanvas.set(message.requestId, controller);
+      const startedAt = performance.now();
+      void handler(message, controller.signal)
+        .then((result) => {
+          log("web.canvas_request_ok", {
+            requestId: message.requestId,
+            action: message.action,
+            ms: Math.round(performance.now() - startedAt),
+          });
+          send({ type: "canvas_response", requestId: message.requestId, ok: true, result });
+        })
+        .catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          log(
+            "web.canvas_request_error",
+            { requestId: message.requestId, action: message.action, detail },
+            "error",
+          );
+          send({ type: "canvas_response", requestId: message.requestId, ok: false, error: detail });
+        })
+        .finally(() => pendingCanvas.delete(message.requestId));
     });
-
     return () => {
-      if (logFlushTimerRef.current !== null) clearTimeout(logFlushTimerRef.current);
+      disposed = true;
+      if (logTimer !== undefined) clearTimeout(logTimer);
+      abortCanvas();
       socket.close();
-      wsRef.current = null;
+      if (wsRef.current === socket) wsRef.current = null;
     };
-  }, [url, flushLogs, logEvent, sendRaw, updateState]);
+  }, [url]);
 
   const send = useCallback(
-    (text: string, anchor: CanvasAnchor): void => {
+    (text: string, canvasContext: PromptCanvasContext): void => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      const promptId = randomId();
-      updateState((current) => ({
-        ...current,
-        busy: true,
-        messages: [...current.messages, { id: promptId, role: "user", text: trimmed }],
-      }));
-      sendRaw({ type: "prompt", id: promptId, text: trimmed, anchor });
+      const promptId = crypto.randomUUID();
+      if (!sendRaw({ type: "prompt", id: promptId, text: trimmed, canvasContext })) {
+        setState((current) =>
+          reduceAgentMessage(current, {
+            type: "error",
+            message: "Connection closed; reload to start a new session",
+          }),
+        );
+        return;
+      }
+      const entry: ChatMessage = { id: promptId, promptId, role: "user", text: trimmed };
+      setState((current) => ({ ...current, messages: [...current.messages, entry].slice(-500) }));
     },
-    [sendRaw, updateState],
+    [sendRaw],
   );
 
   return {
-    ready,
     ...state,
-    dismissRun: (runId) =>
-      updateState((current) => ({
-        ...current,
-        runs: current.runs.filter((run) => run.runId !== runId),
-      })),
     send,
-    setModel: (role, selection) =>
-      sendRaw({ type: "set_model", role, provider: selection.provider, modelId: selection.id }),
-    setThinking: (role, level) => sendRaw({ type: "set_thinking", role, level }),
     setCanvasRequestHandler,
+    dismissRun: (runId) => setState((current) => dismissChatRun(current, runId)),
+    cancelRun: (runId) => {
+      sendRaw({ type: "cancel_run", runId });
+    },
+    retryRun: (runId) => {
+      sendRaw({ type: "retry_run", runId });
+    },
+    setModel: (role, selection) => {
+      sendRaw({ type: "set_model", role, provider: selection.provider, modelId: selection.id });
+    },
+    setThinking: (role, level) => {
+      sendRaw({ type: "set_thinking", role, level });
+    },
   };
 };

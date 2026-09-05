@@ -1,7 +1,8 @@
 packages:
   - web
   - backend
-# tldraw 5.2.x packages use sibling @tldraw imports that strict bundlers resolve
+  - shared
+# tldraw packages use sibling @tldraw imports that strict bundlers resolve
 # from the virtual store root.
 hoistPattern:
   - "@tldraw/*"

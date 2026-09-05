@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { canvasShapesForModel } from "./canvasModelContext.js";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -8,21 +9,14 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import type { RequestCanvas } from "./canvasConnection.js";
+import type { CanvasAction, CanvasActionParams, CanvasActionResult } from "@piet/protocol";
 import type {
   CanvasLint,
   CanvasScope,
   CanvasSnapshot,
-  DeleteShapesResult,
-  GetCanvasParams,
-  MoveShapesResult,
   PutCanvasShape,
-  PutImageResult,
-  PutPathResult,
-  PutMermaidResult,
-  PutShapeResult,
-  SetViewResult,
-  UpdateShapeResult,
-} from "./protocol.js";
+  PromptCanvasContext,
+} from "@piet/protocol";
 
 const DEFAULT_MAX_SHAPES = 200;
 const MAX_SHAPES_LIMIT = 1_000;
@@ -125,11 +119,6 @@ const normalizeScope = (scope: string | undefined): CanvasScope => {
   if (scope === "page" || scope === "selection") return scope;
   return "viewport";
 };
-
-const getSelectionParams = (maxShapes: number | undefined): GetCanvasParams => ({
-  scope: "selection",
-  maxShapes: normalizeMaxShapes(maxShapes),
-});
 
 const normalizeMaxShapes = (maxShapes: number | undefined): number => {
   if (maxShapes === undefined || !Number.isFinite(maxShapes)) return DEFAULT_MAX_SHAPES;
@@ -252,8 +241,12 @@ const redactCanvasImage = (value: unknown): unknown => {
   };
 };
 
-const stringifyForModel = (value: unknown): string => {
-  const json = JSON.stringify(redactCanvasImage(value), null, 2);
+const stringifyForModel = (value: CanvasSnapshot): string => {
+  const json = JSON.stringify(
+    redactCanvasImage({ ...value, shapes: canvasShapesForModel(value.shapes) }),
+    null,
+    2,
+  );
   const truncation = truncateHead(json, {
     maxLines: DEFAULT_MAX_LINES,
     maxBytes: DEFAULT_MAX_BYTES,
@@ -280,21 +273,101 @@ const snapshotContent = (snapshot: CanvasSnapshot): (TextContent | ImageContent)
   return content;
 };
 
-const snapshotImageContent = (snapshot: CanvasSnapshot): ImageContent[] =>
-  snapshot.image
-    ? [
-        {
-          type: "image",
-          data: snapshot.image.data,
-          mimeType: snapshot.image.mimeType,
-        },
-      ]
-    : [];
-
 const lintLines = (lints: CanvasLint[] | undefined): string[] =>
   (lints ?? []).map((lint) => `Lint (${lint.kind}): ${lint.message}`);
 
-export const createCanvasTools = (requestCanvas: RequestCanvas) => {
+const capturedSelectionSnapshot = (
+  context: PromptCanvasContext,
+  maxShapes: number | undefined,
+): CanvasSnapshot => {
+  const limit = normalizeMaxShapes(maxShapes);
+  const shapes = context.selection.shapes.slice(0, limit);
+  return {
+    scope: "selection",
+    page: context.page,
+    zoom: context.zoom,
+    viewport: context.viewport,
+    selectedShapeIds: context.selection.selectedShapeIds,
+    shapeCount: context.selection.shapeCount,
+    returnedShapeCount: shapes.length,
+    truncated: context.selection.truncated || shapes.length < context.selection.shapeCount,
+    shapes,
+  };
+};
+
+const canvasMutationReferences = (
+  action: CanvasAction,
+  params: CanvasActionParams<CanvasAction>,
+): string[] => {
+  if (action === "get_canvas" || action === "set_view") return [];
+  if ("ids" in params) return params.ids;
+  if ("moves" in params) return params.moves.map((move) => move.id);
+  if ("shape" in params)
+    return [
+      params.shape.id,
+      params.shape.parentId,
+      params.shape.startShapeId,
+      params.shape.endShapeId,
+    ].filter((id): id is string => id !== undefined);
+  if ("shapes" in params)
+    return params.shapes.flatMap((shape) =>
+      [shape.parentId, shape.startShapeId, shape.endShapeId].filter(
+        (id): id is string => id !== undefined,
+      ),
+    );
+  return "id" in params && params.id ? [params.id] : [];
+};
+
+/** Model tools own canvas observation fingerprints and page-scoped RPC context for each turn. */
+export const createCanvasTools = (
+  connectionRequest: RequestCanvas,
+  getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
+) => {
+  const observations = new Map<string, Record<string, string>>();
+  const requestCanvas = async <A extends CanvasAction>(
+    action: A,
+    params: CanvasActionParams<A>,
+    signal?: AbortSignal,
+  ): Promise<CanvasActionResult<A>> => {
+    const context = getPromptCanvasContext();
+    if (!context) throw new Error("Canvas tools require an active request context");
+    let expectedShapes = observations.get(context.capturedAt);
+    if (!expectedShapes) {
+      expectedShapes = Object.fromEntries(
+        context.selection.shapes.flatMap((shape) =>
+          shape.revision ? [[shape.id, shape.revision]] : [],
+        ),
+      );
+      observations.set(context.capturedAt, expectedShapes);
+      if (observations.size > 32) {
+        const oldest = observations.keys().next().value;
+        if (oldest !== undefined) observations.delete(oldest);
+      }
+    }
+    const result = await connectionRequest(
+      action,
+      params,
+      {
+        pageId: context.page.id,
+        contextId: context.capturedAt,
+        expectedShapes: Object.fromEntries(
+          canvasMutationReferences(action, params).flatMap((rawId) => {
+            const id = rawId.startsWith("shape:") ? rawId : `shape:${rawId}`;
+            const revision = expectedShapes[id];
+            return revision === undefined ? [] : [[id, revision]];
+          }),
+        ),
+        ...(context.style ? { style: context.style } : {}),
+      },
+      signal,
+    );
+    if ("shapes" in result) {
+      for (const shape of result.shapes) {
+        if (shape.revision) expectedShapes[shape.id] = shape.revision;
+      }
+    }
+    return result;
+  };
   const getCanvasTool = defineTool({
     name: "get_canvas",
     label: "Get Canvas",
@@ -308,6 +381,12 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       "Use get_selection instead when the user refers to selected objects or the current selection.",
     ],
     parameters: Type.Object({
+      includeImage: Type.Optional(
+        Type.Boolean({
+          description:
+            "Include a PNG for visual review (default true). False returns fast structured context only.",
+        }),
+      ),
       scope: Type.Optional(
         Type.String({
           description: "viewport (default) or page (whole current canvas/page).",
@@ -320,11 +399,12 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<CanvasSnapshot>(
+      const result = await requestCanvas(
         "get_canvas",
         {
           scope: normalizeScope(params.scope),
           maxShapes: normalizeMaxShapes(params.maxShapes),
+          includeImage: params.includeImage ?? true,
         },
         signal,
       );
@@ -340,11 +420,12 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
     name: "get_selection",
     label: "Get Selection",
     description:
-      "Get the currently selected tldraw shapes as JSON plus a PNG render. Use this when the user refers to selected objects. Returns an empty shapes array when nothing is selected.",
-    promptSnippet: "Get the current selected group of tldraw objects, including a PNG render.",
+      "Get the tldraw shapes that were selected when the active request was submitted. This immutable JSON snapshot is task-scoped, so later user or agent selection changes do not affect it. Returns an empty shapes array when nothing was selected.",
+    promptSnippet: "Get the submission-time selected group of tldraw objects.",
     promptGuidelines: [
       "Use get_selection when the user says selected, selection, these objects, this group, or asks about highlighted objects.",
-      "If no shapes are selected, ask the user to select objects or use get_canvas for broader canvas context.",
+      "get_selection is the immutable submission-time selection; use get_canvas when you intentionally need current canvas state.",
+      "If no shapes were selected, ask the user to select objects or use get_canvas for broader canvas context.",
     ],
     parameters: Type.Object({
       maxShapes: Type.Optional(
@@ -354,11 +435,14 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<CanvasSnapshot>(
-        "get_canvas",
-        getSelectionParams(params.maxShapes),
-        signal,
-      );
+      const captured = getPromptCanvasContext();
+      const result = captured
+        ? capturedSelectionSnapshot(captured, params.maxShapes)
+        : await requestCanvas(
+            "get_canvas",
+            { scope: "selection", maxShapes: normalizeMaxShapes(params.maxShapes) },
+            signal,
+          );
 
       return {
         content: snapshotContent(result),
@@ -385,7 +469,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
     parameters: shapeParams,
     async execute(_toolCallId, params, signal) {
       const { shape, tips } = normalizeShape(params);
-      const result = await requestCanvas<PutShapeResult>("put_shape", { shape }, signal);
+      const result = await requestCanvas("put_shape", { shape }, signal);
 
       const lines = [`Created shape ${result.createdShapeId}`];
       for (const skipped of result.skippedBindings ?? []) {
@@ -425,7 +509,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       y: Type.Optional(Type.Number({ description: "Page-space y of the diagram's top-left." })),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<PutMermaidResult>(
+      const result = await requestCanvas(
         "put_mermaid",
         { source: params.source, x: params.x, y: params.y },
         signal,
@@ -475,7 +559,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       h: Type.Optional(Type.Number({ minimum: 1, description: "Displayed height." })),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<PutImageResult>("put_image", params, signal);
+      const result = await requestCanvas("put_image", params, signal);
       return {
         content: [
           {
@@ -519,7 +603,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       isClosed: Type.Optional(Type.Boolean()),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<PutPathResult>("put_draw", params, signal);
+      const result = await requestCanvas("put_draw", params, signal);
       return {
         content: [
           {
@@ -553,7 +637,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       size: sizeParams,
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<PutPathResult>("put_highlight", params, signal);
+      const result = await requestCanvas("put_highlight", params, signal);
       return {
         content: [
           {
@@ -585,7 +669,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       spline: Type.Optional(Type.Union([Type.Literal("line"), Type.Literal("cubic")])),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<PutPathResult>("put_line", params, signal);
+      const result = await requestCanvas("put_line", params, signal);
       return {
         content: [
           {
@@ -612,7 +696,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
     parameters: updateShapeParams,
     async execute(_toolCallId, params, signal) {
       const { shape, tips } = normalizeShape(params);
-      const result = await requestCanvas<UpdateShapeResult>(
+      const result = await requestCanvas(
         "update_shape",
         { shape: { ...shape, id: params.id } },
         signal,
@@ -650,11 +734,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       ids: Type.Array(Type.String(), { description: "Shape ids to delete." }),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<DeleteShapesResult>(
-        "delete_shapes",
-        { ids: params.ids },
-        signal,
-      );
+      const result = await requestCanvas("delete_shapes", { ids: params.ids }, signal);
 
       const lines = [`Deleted ${result.deletedShapeIds.length} shape(s)`];
       if (result.missingIds && result.missingIds.length > 0) {
@@ -696,11 +776,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<MoveShapesResult>(
-        "move_shapes",
-        { moves: params.moves },
-        signal,
-      );
+      const result = await requestCanvas("move_shapes", { moves: params.moves }, signal);
 
       const lines = [`Moved ${result.movedShapeIds.length} shape(s)`];
       if (result.missingIds && result.missingIds.length > 0) {
@@ -722,8 +798,8 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       "Move the camera (shared with the user). Pass bounds to frame a page-space region, shapeIds to zoom to specific shapes, or neither to zoom to fit the whole page. Use it to navigate large canvases before get_canvas, or to show the user the result after drawing.",
     promptSnippet: "Move the tldraw camera to a region, to shapes, or to fit the page.",
     promptGuidelines: [
-      "Use set_view before get_canvas when relevant content is outside the current viewport.",
-      "After finishing a drawing, set_view to the created shapes so the user sees the result.",
+      "Only move the shared camera when the user explicitly asks to navigate. Do not interrupt drawing or pan/zoom to announce background results.",
+      "Use get_canvas scope page to inspect off-screen content without moving the camera.",
     ],
     parameters: Type.Object({
       bounds: Type.Optional(boundsParams),
@@ -732,7 +808,7 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas<SetViewResult>(
+      const result = await requestCanvas(
         "set_view",
         { bounds: params.bounds, shapeIds: params.shapeIds },
         signal,
@@ -765,16 +841,5 @@ export const createCanvasTools = (requestCanvas: RequestCanvas) => {
       moveShapesTool,
       setViewTool,
     ],
-    async getPromptImages(signal?: AbortSignal): Promise<ImageContent[]> {
-      const snapshot = await requestCanvas<CanvasSnapshot>(
-        "get_canvas",
-        {
-          scope: "viewport",
-          maxShapes: DEFAULT_MAX_SHAPES,
-        },
-        signal,
-      );
-      return snapshotImageContent(snapshot);
-    },
   };
 };
