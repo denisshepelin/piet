@@ -1,50 +1,98 @@
-import type { Editor, TLShape } from "tldraw";
-import type { CanvasBounds, CanvasShapeSummary } from "./protocol.ts";
+import {
+  DefaultColorStyle,
+  DefaultDashStyle,
+  DefaultFillStyle,
+  DefaultFontStyle,
+  DefaultSizeStyle,
+  renderPlaintextFromRichText,
+  richTextValidator,
+  type Editor,
+  type TLShape,
+} from "tldraw";
+import type {
+  CanvasAnchor,
+  CanvasBounds,
+  CanvasShapeSummary,
+  PromptCanvasContext,
+} from "@piet/protocol";
 
-export type PageOffset = { x: number; y: number };
+/** Explicit style values captured from the selection or the board defaults. */
+export type CanvasStyleProfile = {
+  color: string;
+  size: string;
+  dash: string;
+  fill: string;
+  font: string;
+  opacity: number;
+};
 
+const MAX_CAPTURED_SELECTION_SHAPES = 200;
+
+/** Captures page-space prompt context without changing the editor session state. */
+export const capturePromptCanvasContext = (
+  editor: Editor,
+  anchor: CanvasAnchor,
+): PromptCanvasContext & { style: CanvasStyleProfile } => {
+  const page = editor.getCurrentPage();
+  const selectedShapes = editor.getSelectedShapes();
+  const selectionBounds = editor.getSelectionPageBounds();
+  const capturedShapes = selectedShapes.slice(0, MAX_CAPTURED_SELECTION_SHAPES);
+
+  return {
+    capturedAt: new Date().toISOString(),
+    page: { id: page.id, name: page.name },
+    zoom: Math.round(editor.getZoomLevel() * 100) / 100,
+    anchor,
+    viewport: roundCanvasBounds(editor.getViewportPageBounds()),
+    style: captureCanvasStyleProfile(editor),
+    selection: {
+      selectedShapeIds: selectedShapes.map(({ id }) => id),
+      ...(selectionBounds ? { bounds: roundCanvasBounds(selectionBounds) } : {}),
+      shapeCount: selectedShapes.length,
+      truncated: capturedShapes.length < selectedShapes.length,
+      shapes: capturedShapes.map((shape) => summarizeShape(editor, shape)),
+    },
+  };
+};
+
+/** Captures explicit style values while leaving next-shape settings untouched. */
+export const captureCanvasStyleProfile = (editor: Editor): CanvasStyleProfile => {
+  const shared = editor.getSharedStyles();
+  const known = (
+    style:
+      | typeof DefaultColorStyle
+      | typeof DefaultSizeStyle
+      | typeof DefaultDashStyle
+      | typeof DefaultFillStyle
+      | typeof DefaultFontStyle,
+  ): string => String(shared.getAsKnownValue(style) ?? editor.getStyleForNextShape(style));
+  const selected = editor.getSelectedShapes();
+  const selectedOpacity = selected.every((shape) => shape.opacity === selected[0]?.opacity)
+    ? (selected[0]?.opacity ?? editor.getInstanceState().opacityForNextShape)
+    : editor.getInstanceState().opacityForNextShape;
+
+  return {
+    color: String(known(DefaultColorStyle)),
+    size: String(known(DefaultSizeStyle)),
+    dash: String(known(DefaultDashStyle)),
+    fill: String(known(DefaultFillStyle)),
+    font: String(known(DefaultFontStyle)),
+    opacity: selectedOpacity,
+  };
+};
+
+/** Recognizes object-shaped values crossing the canvas tool boundary. */
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-export const richTextFromPlainText = (text: string): Record<string, unknown> => ({
-  type: "doc",
-  content: text
-    .split("\n")
-    .map((line) =>
-      line.length === 0
-        ? { type: "paragraph" }
-        : { type: "paragraph", content: [{ type: "text", text: line }] },
-    ),
-});
-
-export const plainTextFromRichText = (richText: unknown): string | undefined => {
-  if (!isRecord(richText) || !Array.isArray(richText.content)) return undefined;
-
-  const lines = richText.content.map((block) => {
-    if (!isRecord(block) || !Array.isArray(block.content)) return "";
-    return block.content
-      .map((child) => (isRecord(child) && typeof child.text === "string" ? child.text : ""))
-      .join("");
-  });
-
-  const text = lines.join("\n");
-  return text.length > 0 ? text : undefined;
+/** Extracts plain text through the editor's configured rich-text extensions. */
+export const plainTextFromRichText = (editor: Editor, richText: unknown): string | undefined => {
+  if (!richTextValidator.isValid(richText)) return undefined;
+  return renderPlaintextFromRichText(editor, richText) || undefined;
 };
 
-export const offsetBounds = (
-  bounds: { x: number; y: number; w: number; h: number },
-  offset: PageOffset,
-): CanvasBounds => ({
-  x: Math.round(bounds.x - offset.x),
-  y: Math.round(bounds.y - offset.y),
-  w: Math.round(bounds.w),
-  h: Math.round(bounds.h),
-});
+const ALWAYS_DROP_PROPS = new Set(["richText", "segments", "growY"]);
 
-// Props dropped from every shape type regardless of whitelist: huge/derived/legacy fields.
-const ALWAYS_DROP_PROPS = new Set(["richText", "segments", "growY", "scale"]);
-
-// Per-type prop whitelist. Missing type -> keep all remaining (non-always-dropped) props.
 const PROP_WHITELIST: Record<string, string[]> = {
   geo: [
     "geo",
@@ -56,11 +104,23 @@ const PROP_WHITELIST: Record<string, string[]> = {
     "font",
     "align",
     "verticalAlign",
+    "scale",
     "url",
   ],
-  text: ["color", "size", "font", "textAlign"],
-  note: ["color", "size", "font", "align", "verticalAlign"],
-  arrow: ["color", "size", "dash", "bend", "arrowheadStart", "arrowheadEnd"],
+  text: ["color", "size", "font", "textAlign", "scale"],
+  note: ["color", "labelColor", "size", "font", "align", "verticalAlign", "scale"],
+  arrow: [
+    "color",
+    "labelColor",
+    "size",
+    "font",
+    "fill",
+    "dash",
+    "bend",
+    "arrowheadStart",
+    "arrowheadEnd",
+    "scale",
+  ],
   frame: [],
   draw: ["color", "fill", "dash", "size", "isClosed"],
   highlight: ["color", "fill", "dash", "size", "isClosed"],
@@ -69,25 +129,6 @@ const PROP_WHITELIST: Record<string, string[]> = {
   video: ["url", "assetId"],
   embed: ["url", "assetId"],
   bookmark: ["url", "assetId"],
-};
-
-// Values matching tldraw's own defaults; dropped to save tokens.
-const PROP_DEFAULTS: Record<string, unknown> = {
-  color: "black",
-  labelColor: "black",
-  fill: "none",
-  dash: "draw",
-  size: "m",
-  font: "draw",
-  align: "middle",
-  verticalAlign: "middle",
-  textAlign: "start",
-  bend: 0,
-  arrowheadStart: "none",
-  arrowheadEnd: "arrow",
-  spline: "line",
-  url: "",
-  isClosed: false,
 };
 
 const roundLinePoints = (points: unknown): unknown => {
@@ -121,59 +162,53 @@ const arrowTerminalsFromBindings = (editor: Editor, shape: TLShape): ArrowTermin
 const buildProps = (
   editor: Editor,
   shape: TLShape,
-  offset: PageOffset,
   boundTerminals: { start: boolean; end: boolean },
 ): Record<string, unknown> | undefined => {
   const rawProps = isRecord(shape.props) ? shape.props : {};
   const whitelist = PROP_WHITELIST[shape.type];
-
   const picked: Record<string, unknown> = whitelist
     ? Object.fromEntries(
         whitelist.filter((key) => key in rawProps).map((key) => [key, rawProps[key]]),
       )
     : Object.fromEntries(Object.entries(rawProps).filter(([key]) => !ALWAYS_DROP_PROPS.has(key)));
 
-  if (shape.type === "line" && "points" in picked) {
-    picked.points = roundLinePoints(picked.points);
-  }
+  if (shape.type === "line" && "points" in picked) picked.points = roundLinePoints(picked.points);
 
   if (shape.type === "arrow") {
     const transform = editor.getShapePageTransform(shape.id);
-    if (!boundTerminals.start && isRecord(rawProps.start)) {
-      const point = transform.applyToPoint(rawProps.start as { x: number; y: number });
-      picked.start = { x: Math.round(point.x - offset.x), y: Math.round(point.y - offset.y) };
+    if (!boundTerminals.start) {
+      const point = transform.applyToPoint(shape.props.start);
+      picked.start = { x: Math.round(point.x), y: Math.round(point.y) };
     }
-    if (!boundTerminals.end && isRecord(rawProps.end)) {
-      const point = transform.applyToPoint(rawProps.end as { x: number; y: number });
-      picked.end = { x: Math.round(point.x - offset.x), y: Math.round(point.y - offset.y) };
+    if (!boundTerminals.end) {
+      const point = transform.applyToPoint(shape.props.end);
+      picked.end = { x: Math.round(point.x), y: Math.round(point.y) };
     }
   }
 
+  const defaults = editor.getShapeUtil(shape).getDefaultProps();
+  const defaultProps = isRecord(defaults) ? defaults : {};
   for (const [key, value] of Object.entries(picked)) {
-    if (key in PROP_DEFAULTS && value === PROP_DEFAULTS[key]) delete picked[key];
-  }
-  for (const [key, value] of Object.entries(picked)) {
-    if (typeof value === "number") picked[key] = Math.round(value);
+    if (key in defaultProps && value === defaultProps[key]) delete picked[key];
+    else if (typeof value === "number") picked[key] = Math.round(value * 100) / 100;
   }
 
   return Object.keys(picked).length > 0 ? picked : undefined;
 };
 
-export const summarizeShape = (
-  editor: Editor,
-  shape: TLShape,
-  offset: PageOffset,
-): CanvasShapeSummary => {
+/** Produces a compact page-space summary and a fingerprint for conflict checks. */
+export const summarizeShape = (editor: Editor, shape: TLShape): CanvasShapeSummary => {
   const pageBounds = editor.getShapePageBounds(shape);
   const position = pageBounds
-    ? offsetBounds(pageBounds, offset)
-    : { x: Math.round(shape.x - offset.x), y: Math.round(shape.y - offset.y) };
+    ? roundCanvasBounds(pageBounds)
+    : { x: Math.round(shape.x), y: Math.round(shape.y) };
 
   const summary: CanvasShapeSummary = {
     id: shape.id,
     type: shape.type,
     x: position.x,
     y: position.y,
+    revision: JSON.stringify(shape),
   };
 
   if (pageBounds) {
@@ -192,7 +227,7 @@ export const summarizeShape = (
       ? typeof rawProps.name === "string" && rawProps.name.length > 0
         ? rawProps.name
         : undefined
-      : plainTextFromRichText(rawProps.richText);
+      : plainTextFromRichText(editor, rawProps.richText);
   if (text !== undefined) summary.text = text;
 
   if (isRecord(shape.meta) && Object.keys(shape.meta).length > 0) summary.meta = shape.meta;
@@ -201,7 +236,7 @@ export const summarizeShape = (
   if (startShapeId !== undefined) summary.startShapeId = startShapeId;
   if (endShapeId !== undefined) summary.endShapeId = endShapeId;
 
-  const props = buildProps(editor, shape, offset, {
+  const props = buildProps(editor, shape, {
     start: startShapeId !== undefined,
     end: endShapeId !== undefined,
   });
@@ -209,3 +244,16 @@ export const summarizeShape = (
 
   return summary;
 };
+
+/** Converts native bounds to rounded page-space canvas bounds. */
+export const roundCanvasBounds = (bounds: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}): CanvasBounds => ({
+  x: Math.round(bounds.x),
+  y: Math.round(bounds.y),
+  w: Math.round(bounds.w),
+  h: Math.round(bounds.h),
+});

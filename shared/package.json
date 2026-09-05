@@ -1,0 +1,25 @@
+{
+  "name": "@piet/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/canvasProtocol.d.ts",
+      "import": "./dist/canvasProtocol.js"
+    }
+  },
+  "scripts": {
+    "build": "tsgo --build",
+    "typecheck": "tsgo --build",
+    "dev": "tsgo --build --watch",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1"
+  }
+}

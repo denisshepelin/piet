@@ -1,30 +1,27 @@
-import type { Box, Editor, TLShape } from "tldraw";
-import type { CanvasLint } from "./protocol.ts";
-import { plainTextFromRichText } from "./canvasFormat.ts";
+import { isShapeId, type Box, type Editor, type TLShape, type TLShapeId } from "tldraw";
+import type { CanvasLint } from "@piet/protocol";
+import { isRecord, plainTextFromRichText } from "./canvasFormat.ts";
 
 const MAX_LINTS = 10;
 const OVERLAP_AREA_RATIO = 0.2;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const textOf = (shape: TLShape): string | undefined =>
-  isRecord(shape.props) ? plainTextFromRichText(shape.props.richText) : undefined;
+const textOf = (editor: Editor, shape: TLShape): string | undefined =>
+  plainTextFromRichText(editor, isRecord(shape.props) ? shape.props.richText : undefined);
 
 // Walks the parent chain of `shapeId` looking for `ancestorId`. Guards against
 // cycles defensively, though the shape tree should never contain one.
-const isAncestorOf = (editor: Editor, ancestorId: string, shapeId: string): boolean => {
-  const seen = new Set<string>();
-  let current = editor.getShape(shapeId as never);
+const isAncestorOf = (editor: Editor, ancestorId: TLShapeId, shapeId: TLShapeId): boolean => {
+  const seen = new Set<TLShapeId>();
+  let current = editor.getShape(shapeId);
   while (current && !seen.has(current.id)) {
     seen.add(current.id);
     if (current.parentId === ancestorId) return true;
-    current = editor.getShape(current.parentId as never);
+    current = isShapeId(current.parentId) ? editor.getShape(current.parentId) : undefined;
   }
   return false;
 };
 
-const isAncestorRelated = (editor: Editor, aId: string, bId: string): boolean =>
+const isAncestorRelated = (editor: Editor, aId: TLShapeId, bId: TLShapeId): boolean =>
   isAncestorOf(editor, aId, bId) || isAncestorOf(editor, bId, aId);
 
 const overlapArea = (a: Box, b: Box): number => {
@@ -62,7 +59,7 @@ const pageTextShapes = (editor: Editor): TextShape[] =>
     .getCurrentPageShapes()
     .map((shape): TextShape | undefined => {
       if (shape.type === "frame") return undefined;
-      const text = textOf(shape);
+      const text = textOf(editor, shape);
       if (!text) return undefined;
       const bounds = editor.getShapePageBounds(shape);
       if (!bounds) return undefined;
@@ -77,7 +74,7 @@ const detectOverlappingText = (
   seenPairs: Set<string>,
 ): CanvasLint[] => {
   if (shape.type === "frame") return [];
-  const text = textOf(shape);
+  const text = textOf(editor, shape);
   if (!text) return [];
   const bounds = editor.getShapePageBounds(shape);
   if (!bounds) return [];
@@ -104,13 +101,13 @@ const detectOverlappingText = (
   return lints;
 };
 
-export const detectLints = (editor: Editor, shapeIds: string[]): CanvasLint[] => {
+export const detectLints = (editor: Editor, shapeIds: TLShapeId[]): CanvasLint[] => {
   const lints: CanvasLint[] = [];
 
   const shapes: TLShape[] = [];
   for (const id of shapeIds) {
     try {
-      const shape = editor.getShape(id as never);
+      const shape = editor.getShape(id);
       if (shape) shapes.push(shape);
     } catch {
       // skip shapes the editor can't resolve

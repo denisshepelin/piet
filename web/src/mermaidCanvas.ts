@@ -1,16 +1,16 @@
 import { createMermaidDiagram, MermaidDiagramError } from "@tldraw/mermaid";
-import { Box, type Editor } from "tldraw";
-import type { CanvasBounds } from "./protocol.ts";
+import { Box, type Editor, type TLShapeId } from "tldraw";
+import type { CanvasBounds } from "@piet/protocol";
 
 export type MermaidPutResult = {
-  createdShapeIds: string[];
+  createdShapeIds: TLShapeId[];
   bounds?: CanvasBounds; // page-space union of created shapes' bounds, NOT rounded
   fallback?: "svg";
 };
 
-const unionShapeBounds = (editor: Editor, shapeIds: string[]): CanvasBounds | undefined => {
+const unionShapeBounds = (editor: Editor, shapeIds: TLShapeId[]): CanvasBounds | undefined => {
   const boxes = shapeIds
-    .map((id) => editor.getShapePageBounds(id as never))
+    .map((id) => editor.getShapePageBounds(id))
     .filter((box): box is Box => box !== undefined);
   if (boxes.length === 0) return undefined;
 
@@ -32,7 +32,7 @@ export const putMermaidDiagram = async (
   try {
     await createMermaidDiagram(editor, source, {
       // centerOnPosition defaults to true (center-on-position); false makes
-      // `position` the diagram's top-left, per renderBlueprint.mjs offset math.
+      // `position` the diagram's top-left, per the blueprint placement math.
       ...(position ? { blueprintRender: { position, centerOnPosition: false } } : {}),
       onUnsupportedDiagram: async (svg) => {
         fallback = "svg";
@@ -56,7 +56,7 @@ export const putMermaidDiagram = async (
   const afterIds = editor.getCurrentPageShapeIds();
   const createdShapeIds = [...afterIds]
     .filter((id) => !beforeIds.has(id))
-    .map((id) => id as string);
+    .map((id) => id as TLShapeId);
 
   return {
     createdShapeIds,

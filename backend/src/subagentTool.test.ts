@@ -1,146 +1,707 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { createSubagentTool, type ResearchResult } from "./subagentTool.js";
-import type { RunUpdateMessage, ServerMessage } from "./protocol.js";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type BackgroundSession, createSubagentTool, type ResearchResult } from "./subagentTool.js";
+import type { PromptCanvasContext, RunSnapshot, ServerMessage } from "@piet/protocol";
+import type { CanvasProposal, CanvasProposalTool } from "./canvasProposalTool.js";
 
-type SessionEvent = Parameters<Parameters<AgentSession["subscribe"]>[0]>[0];
-
-const fakeSession = (script: (emit: (event: SessionEvent) => void) => void): AgentSession => {
-  const listeners: ((event: SessionEvent) => void)[] = [];
-  return {
-    subscribe: (listener: (event: SessionEvent) => void) => {
-      listeners.push(listener);
-      return () => undefined;
-    },
-    prompt: async () => {
-      script((event) => {
-        for (const listener of listeners) listener(event);
-      });
-    },
-    abort: async () => undefined,
-    dispose: () => undefined,
-  } as unknown as AgentSession;
+type Deferred<T> = {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: unknown) => void;
 };
 
-const collect = () => {
-  const updates: RunUpdateMessage[] = [];
-  const results: ResearchResult[] = [];
+const deferred = <T>(): Deferred<T> => {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolvePromise = promiseResolve;
+    rejectPromise = promiseReject;
+  });
   return {
-    updates,
-    results,
-    send: (message: ServerMessage) => {
-      if (message.type === "run_update") updates.push(message);
+    promise,
+    resolve: (value) => {
+      if (resolvePromise) resolvePromise(value);
     },
-    onResult: (result: ResearchResult) => results.push(result),
+    reject: (error) => {
+      if (rejectPromise) rejectPromise(error);
+    },
   };
 };
 
-/** spawn_research ignores execute's signal/onUpdate/ctx parameters, so the test omits them. */
-type SpawnResearch = (
-  toolCallId: string,
-  params: { title: string; instruction: string },
-) => Promise<unknown>;
+const canvasContext = (x = 0, y = 0): PromptCanvasContext => ({
+  capturedAt: "2026-07-29T20:00:00.000Z",
+  page: { id: "page:test", name: "Page 1" },
+  zoom: 1,
+  anchor: { x, y },
+  viewport: { x: 0, y: 0, w: 1000, h: 800 },
+  selection: {
+    selectedShapeIds: ["shape:selected"],
+    shapeCount: 1,
+    truncated: false,
+    shapes: [{ id: "shape:selected", type: "geo", x: 10, y: 20, w: 100, h: 80 }],
+  },
+});
 
-const spawn = (tool: ReturnType<typeof createSubagentTool>["tool"], title: string) =>
-  (tool.execute as unknown as SpawnResearch)("call-1", {
-    title,
-    instruction: `do ${title}`,
-  });
+class FakeSession implements BackgroundSession {
+  readonly promptStarted = deferred<void>();
+  readonly promptTexts: string[] = [];
+  readonly listeners = new Set<
+    (event: { readonly type: string; readonly [key: string]: unknown }) => void
+  >();
+  readonly promptCompletion = deferred<void>();
+  abortCount = 0;
+  disposeCount = 0;
+  onPrompt: (session: FakeSession) => void = () => undefined;
 
-test("reports a run through one message type and inherits the spawn anchor", async () => {
-  const sink = collect();
-  const anchor = { x: 120, y: 340 };
-  const subagent = createSubagentTool({
-    createSession: async () =>
-      fakeSession((emit) => {
-        emit({
-          type: "tool_execution_start",
-          toolCallId: "t1",
-          toolName: "grep",
-          args: { pattern: "CanvasRequest" },
-        } as SessionEvent);
-        emit({
-          type: "message_update",
-          assistantMessageEvent: { type: "text_delta", delta: "found it" },
-        } as SessionEvent);
+  subscribe(
+    listener: (event: { readonly type: string; readonly [key: string]: unknown }) => void,
+  ): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  prompt(text: string): Promise<void> {
+    this.promptTexts.push(text);
+    this.promptStarted.resolve();
+    this.onPrompt(this);
+    return this.promptCompletion.promise;
+  }
+
+  abort(): void {
+    this.abortCount += 1;
+  }
+
+  dispose(): void {
+    this.disposeCount += 1;
+  }
+
+  emit(event: { readonly type: string; readonly [key: string]: unknown }): void {
+    for (const listener of this.listeners) listener(event);
+  }
+
+  assistantText(text: string): void {
+    this.emit({ type: "message_start", message: { role: "assistant" } });
+    this.textDelta(text);
+  }
+
+  textDelta(text: string): void {
+    this.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: text },
+    });
+  }
+
+  thinkingDelta(text: string): void {
+    this.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: text },
+    });
+  }
+
+  finish(text: string): void {
+    this.assistantText(text);
+    this.promptCompletion.resolve();
+  }
+}
+
+type SpawnTask = {
+  title: string;
+  instruction: string;
+  expectedOutput?: string;
+};
+
+type SpawnResult = { readonly details: { readonly runId: string; readonly title: string } };
+
+type SpawnExecutor = (toolCallId: string, task: SpawnTask) => Promise<SpawnResult>;
+
+const executeSpawn = async (tool: ToolDefinition, task: SpawnTask): Promise<SpawnResult> => {
+  // SAFETY: the extension context is unused by spawn tools; this narrows the test call surface.
+  return (tool.execute as unknown as SpawnExecutor)("call-1", task);
+};
+
+const findTool = (tools: readonly ToolDefinition[], name: string): ToolDefinition => {
+  const tool = tools.find((candidate) => candidate.name === name);
+  assert.ok(tool, `expected ${name} tool`);
+  return tool;
+};
+
+const runUpdate = (message: ServerMessage): RunSnapshot | undefined =>
+  message.type === "run_update" ? message.run : undefined;
+
+const collect = () => {
+  const messages: ServerMessage[] = [];
+  const results: ResearchResult[] = [];
+  return {
+    messages,
+    results,
+    send: (message: ServerMessage): void => {
+      messages.push(message);
+    },
+    onResult: (result: ResearchResult): void => {
+      results.push(result);
+    },
+    updates: (): RunSnapshot[] =>
+      messages.flatMap((message) => {
+        const run = runUpdate(message);
+        return run ? [run] : [];
       }),
-    send: sink.send,
-    getAnchor: () => anchor,
-    onResult: sink.onResult,
+  };
+};
+
+const waitFor = (predicate: () => boolean): Promise<void> => {
+  const check = (remainingAttempts: number): Promise<void> => {
+    if (predicate()) return Promise.resolve();
+    if (remainingAttempts === 0)
+      return Promise.reject(new Error("timed out waiting for background task"));
+    return new Promise<void>((resolve) => setTimeout(resolve, 1)).then(() =>
+      check(remainingAttempts - 1),
+    );
+  };
+  return check(100);
+};
+
+const contextOptions = (sink: ReturnType<typeof collect>) => ({
+  send: sink.send,
+  getCanvasContext: () => canvasContext(120, 340),
+  getPromptId: () => "prompt:origin",
+  onResult: sink.onResult,
+});
+
+test("extracts only the last assistant message and reports the complete lifecycle", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => {
+    current.emit({
+      type: "tool_execution_start",
+      toolName: "grep",
+      args: { pattern: "CanvasRequest" },
+    });
+    current.assistantText("old answer");
+    current.assistantText("final answer");
+    current.promptCompletion.resolve();
+  };
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async (kind, proposalTool) => {
+      assert.equal(kind, "research");
+      assert.equal(proposalTool, undefined);
+      return session;
+    },
   });
 
-  await spawn(subagent.tool, "scan");
-  await new Promise((resolve) => setImmediate(resolve));
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "scan",
+    instruction: "inspect the repository",
+  });
+  await waitFor(() => sink.results.length === 1);
+  runtime.dispose();
 
-  const first = sink.updates.at(0)!;
-  assert.equal(first.status, "running");
-  assert.equal(first.title, "scan");
-  assert.deepEqual(first.anchor, anchor);
-
-  // Only the opening update carries window placement; the rest are status/activity.
+  const updates = sink.updates();
+  assert.equal(updates[0]?.status, "queued");
+  assert.equal(updates.at(-1)?.status, "done");
+  const completed = updates.at(-1);
+  if (!completed || completed.status !== "done") throw new Error("expected completed run");
+  assert.equal(completed.result, "final answer");
+  assert.equal(sink.results[0]?.runId, spawned.details.runId);
+  assert.equal(sink.results[0]?.promptId, "prompt:origin");
+  assert.equal(sink.results[0]?.result, "final answer");
+  assert.deepEqual(sink.results[0]?.canvasContext.anchor, { x: 120, y: 340 });
+  assert.match(session.promptTexts[0] ?? "", /prompt_canvas_context/);
+  assert.match(session.promptTexts[0] ?? "", /shape:selected/);
   assert.deepEqual(
-    sink.updates.slice(1).map((update) => update.title ?? update.anchor),
-    [undefined, undefined, undefined],
+    updates.map((update) => update.sequence),
+    updates.map((_update, index) => index + 1),
   );
-  assert.deepEqual(
-    sink.updates.map((update) => update.text),
-    ["starting…", "grep CanvasRequest", "drafting result…", "found it"],
-  );
-  assert.equal(sink.updates.at(-1)!.status, "done");
+});
 
+test("reports failed initialization and makes the failed run retryable", async () => {
+  const sink = collect();
+  let attempts = 0;
+  const successfulSession = new FakeSession();
+  successfulSession.onPrompt = (current) => current.finish("recovered");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("no model configured");
+      return successfulSession;
+    },
+  });
+
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "retry me",
+    instruction: "inspect",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "error");
+  assert.equal(sink.results[0]?.error, "no model configured");
+
+  runtime.retry(spawned.details.runId);
+  await waitFor(() => sink.results.length === 2);
+  assert.equal(sink.results[1]?.result, "recovered");
+  assert.equal(attempts, 2);
+  runtime.dispose();
+});
+
+test("retry creates a fresh run when initialization settles late", async () => {
+  const sink = collect();
+  const oldInitialization = deferred<BackgroundSession>();
+  const oldSession = new FakeSession();
+  const newSession = new FakeSession();
+  let createCount = 0;
+  newSession.onPrompt = (current) => current.finish("new result");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => {
+      createCount += 1;
+      return createCount === 1 ? oldInitialization.promise : newSession;
+    },
+  });
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "retry initialization",
+    instruction: "inspect once",
+  });
+
+  runtime.cancel(original.details.runId);
+  runtime.retry(original.details.runId);
+  await waitFor(() => sink.results.some((result) => result.result === "new result"));
+  oldInitialization.resolve(oldSession);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(createCount, 2);
   assert.equal(sink.results.length, 1);
-  assert.equal(sink.results[0]!.result, "found it");
-  assert.equal(sink.results[0]!.error, undefined);
-  assert.deepEqual(sink.results[0]!.anchor, anchor);
-});
-
-test("reports a failed run as an error update and a result with no text", async () => {
-  const sink = collect();
-  const subagent = createSubagentTool({
-    createSession: async () => {
-      throw new Error("no model configured");
-    },
-    send: sink.send,
-    getAnchor: () => ({ x: 0, y: 0 }),
-    onResult: sink.onResult,
-  });
-
-  await spawn(subagent.tool, "scan");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(sink.updates.at(-1)!.status, "error");
-  assert.equal(sink.updates.at(-1)!.text, "failed: no model configured");
-  assert.equal(sink.results[0]!.error, "no model configured");
-  assert.equal(sink.results[0]!.result, undefined);
-});
-
-test("counts active runs against the concurrency cap without a separate counter", async () => {
-  const sink = collect();
-  let release = (): void => undefined;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const subagent = createSubagentTool({
-    createSession: async () => {
-      await blocked;
-      return fakeSession(() => undefined);
-    },
-    send: sink.send,
-    getAnchor: () => ({ x: 0, y: 0 }),
-    onResult: sink.onResult,
-  });
-
-  await Promise.all(
-    ["a", "b", "c", "d", "e", "f", "g", "h"].map((title) => spawn(subagent.tool, title)),
+  assert.notEqual(sink.results[0]?.runId, original.details.runId);
+  assert.equal(oldSession.disposeCount, 1);
+  assert.equal(
+    sink
+      .updates()
+      .filter((update) => update.runId === original.details.runId)
+      .at(-1)?.status,
+    "cancelled",
   );
-  await assert.rejects(spawn(subagent.tool, "i"), /at most 8 subagent runs/);
-
-  release();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-
-  // Terminal runs free their slots, so the cap admits new work again.
-  await spawn(subagent.tool, "i");
-  release();
+  runtime.dispose();
 });
+
+test("retry isolates a late prompt settlement from the fresh run", async () => {
+  const sink = collect();
+  const oldSession = new FakeSession();
+  const newSession = new FakeSession();
+  let createCount = 0;
+  newSession.onPrompt = (current) => current.finish("fresh result");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => {
+      createCount += 1;
+      return createCount === 1 ? oldSession : newSession;
+    },
+  });
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "retry active",
+    instruction: "inspect twice",
+  });
+  await oldSession.promptStarted.promise;
+
+  runtime.cancel(original.details.runId);
+  runtime.retry(original.details.runId);
+  await waitFor(() => sink.results.some((result) => result.result === "fresh result"));
+  const resultCount = sink.results.length;
+  oldSession.assistantText("late old result");
+  oldSession.promptCompletion.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(sink.results.length, resultCount);
+  assert.notEqual(sink.results[0]?.runId, original.details.runId);
+  assert.equal(
+    sink
+      .updates()
+      .filter((update) => update.runId === original.details.runId)
+      .at(-1)?.status,
+    "cancelled",
+  );
+  runtime.dispose();
+});
+
+test("cancels while session initialization is pending without late results", async () => {
+  const sink = collect();
+  const initialization = deferred<BackgroundSession>();
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => initialization.promise,
+  });
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "initializing",
+    instruction: "wait",
+  });
+
+  runtime.cancel(spawned.details.runId);
+  await waitFor(() => sink.updates().at(-1)?.status === "cancelled");
+  const session = new FakeSession();
+  initialization.resolve(session);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(sink.results.length, 0);
+  assert.equal(session.disposeCount, 1);
+  assert.equal(
+    sink
+      .updates()
+      .filter((update) => update.runId === spawned.details.runId)
+      .at(-1)?.status,
+    "cancelled",
+  );
+  runtime.dispose();
+});
+
+test("reports a canvas worker without propose_canvas as an error", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => current.finish("I forgot the proposal");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => session,
+  });
+
+  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
+    title: "missing proposal",
+    instruction: "prepare a drawing",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "error");
+
+  const update = sink.updates().at(-1);
+  if (!update || update.status !== "error") throw new Error("expected proposal error");
+  assert.equal(update.error, "Canvas worker completed without a propose_canvas proposal.");
+  assert.equal(sink.results[0]?.error, update.error);
+  runtime.dispose();
+});
+
+test("reports provider stop errors even when prompt resolves", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => {
+    current.emit({ type: "message_start", message: { role: "assistant" } });
+    current.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "partial" }],
+        stopReason: "error",
+        errorMessage: "provider rejected the request",
+      },
+    });
+    current.promptCompletion.resolve();
+  };
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => session,
+  });
+
+  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "provider error",
+    instruction: "inspect",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "error");
+
+  const update = sink.updates().at(-1);
+  if (!update || update.status !== "error") throw new Error("expected provider error");
+  assert.equal(update.error, "provider rejected the request");
+  assert.equal(sink.results[0]?.result, undefined);
+  runtime.dispose();
+});
+
+test("reports provider aborted stop reasons as errors when not locally cancelled", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => {
+    current.emit({ type: "message_start", message: { role: "assistant" } });
+    current.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "provider aborted the request",
+      },
+    });
+    current.promptCompletion.resolve();
+  };
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => session,
+  });
+
+  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "provider aborted",
+    instruction: "inspect",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "error");
+
+  const update = sink.updates().at(-1);
+  if (!update || update.status !== "error") throw new Error("expected provider abort error");
+  assert.equal(update.error, "provider aborted the request");
+  runtime.dispose();
+});
+
+test("deduplicates repeated streaming activity", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => {
+    current.emit({ type: "message_start", message: { role: "assistant" } });
+    current.thinkingDelta("a");
+    current.thinkingDelta("b");
+    current.textDelta("a");
+    current.textDelta("b");
+    current.promptCompletion.resolve();
+  };
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => session,
+  });
+
+  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "dedupe",
+    instruction: "inspect",
+  });
+  await waitFor(() => sink.results.length === 1);
+
+  const runningActivities = sink
+    .updates()
+    .filter((update) => update.status === "running")
+    .map((update) => update.activity);
+  assert.deepEqual(runningActivities, ["starting…", "reasoning…", "drafting result…"]);
+  runtime.dispose();
+});
+
+test("cancels active work and ignores late session events", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => session,
+  });
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "active",
+    instruction: "wait",
+  });
+  await session.promptStarted.promise;
+  runtime.cancel(spawned.details.runId);
+  await waitFor(() => sink.updates().at(-1)?.status === "cancelled");
+  const updateCount = sink.updates().length;
+
+  session.assistantText("late result");
+  session.promptCompletion.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(sink.updates().length, updateCount);
+  assert.equal(sink.results.length, 0);
+  assert.equal(session.abortCount, 1);
+  runtime.dispose();
+});
+
+test("cancels queued work while another task occupies the running slot", async () => {
+  const sink = collect();
+  const first = new FakeSession();
+  const second = new FakeSession();
+  const sessions = [first, second];
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    maxRunning: 1,
+    createSession: async () => {
+      const session = sessions.shift();
+      assert.ok(session);
+      return session;
+    },
+  });
+  const firstRun = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "first",
+    instruction: "block",
+  });
+  await first.promptStarted.promise;
+  const secondRun = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "second",
+    instruction: "cancel",
+  });
+  runtime.cancel(secondRun.details.runId);
+  await waitFor(() =>
+    sink
+      .updates()
+      .some((update) => update.runId === secondRun.details.runId && update.status === "cancelled"),
+  );
+  assert.equal(
+    sink
+      .updates()
+      .some((update) => update.runId === secondRun.details.runId && update.status === "running"),
+    false,
+  );
+
+  runtime.cancel(firstRun.details.runId);
+  runtime.dispose();
+});
+
+test("retry stays queued until the cancelled operation actually settles", async () => {
+  const sink = collect();
+  const oldSession = new FakeSession();
+  const newSession = new FakeSession();
+  let createCount = 0;
+  newSession.onPrompt = (current) => current.finish("after settlement");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    maxRunning: 1,
+    maxActive: 2,
+    createSession: async () => {
+      createCount += 1;
+      return createCount === 1 ? oldSession : newSession;
+    },
+  });
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "slot owner",
+    instruction: "wait",
+  });
+  await oldSession.promptStarted.promise;
+
+  runtime.cancel(original.details.runId);
+  runtime.retry(original.details.runId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const retryUpdate = sink.updates().find((update) => update.runId !== original.details.runId);
+  assert.ok(retryUpdate);
+  assert.equal(retryUpdate.status, "queued");
+  assert.equal(createCount, 1);
+
+  oldSession.promptCompletion.resolve();
+  await waitFor(() => sink.results.some((result) => result.result === "after settlement"));
+  assert.equal(createCount, 2);
+  runtime.dispose();
+});
+
+test("times out active work and reports the deadline reason", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    timeoutMs: 5,
+    createSession: async () => session,
+  });
+  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    title: "slow",
+    instruction: "wait",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "cancelled");
+  const timedOut = sink.updates().at(-1);
+  if (!timedOut || timedOut.status !== "cancelled")
+    throw new Error("expected timeout cancellation");
+  assert.equal(timedOut.reason, "deadline exceeded");
+  assert.equal(sink.results.length, 0);
+  runtime.dispose();
+});
+
+test("waits for finalizeResult before completing a canvas task and propagates cancellation", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  let proposal: CanvasProposal | undefined;
+  let finalizeSignal: AbortSignal | undefined;
+  const finalization = deferred<string>();
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async (kind, proposalTool) => {
+      assert.equal(kind, "canvas");
+      assert.ok(proposalTool);
+      proposal = await executeProposal(proposalTool);
+      return session;
+    },
+    finalizeResult: async (result, signal) => {
+      finalizeSignal = signal;
+      assert.equal(result.proposal?.type, "shapes");
+      return finalization.promise;
+    },
+  });
+  session.onPrompt = (current) => current.finish("prepared");
+  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
+    title: "draw",
+    instruction: "prepare a box",
+  });
+  await waitFor(() => finalizeSignal !== undefined);
+  assert.equal(sink.updates().at(-1)?.status, "running");
+  assert.deepEqual(proposal, { type: "shapes", shapes: [{ type: "geo", x: 20, y: 30 }] });
+
+  const canvasUpdate = sink.updates()[0];
+  if (!canvasUpdate) throw new Error("expected canvas run update");
+  runtime.cancel(canvasUpdate.runId);
+  await waitFor(() => finalizeSignal?.aborted === true);
+  finalization.resolve("cancelled finalization");
+  await waitFor(() => sink.updates().at(-1)?.status === "cancelled");
+  assert.equal(sink.results.length, 0);
+  runtime.dispose();
+});
+
+test("turns a rejected finalization into an error result", async () => {
+  const sink = collect();
+  const session = new FakeSession();
+  session.onPrompt = (current) => current.finish("prepared");
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async (kind, proposalTool) => {
+      assert.equal(kind, "canvas");
+      assert.ok(proposalTool);
+      await executeProposal(proposalTool);
+      return session;
+    },
+    finalizeResult: async () => {
+      throw new Error("canvas commit rejected");
+    },
+  });
+  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
+    title: "reject",
+    instruction: "prepare",
+  });
+  await waitFor(() => sink.updates().at(-1)?.status === "error");
+  const rejected = sink.updates().at(-1);
+  if (!rejected || rejected.status !== "error") throw new Error("expected finalization error");
+  assert.equal(rejected.error, "canvas commit rejected");
+  assert.equal(sink.results[0]?.error, "canvas commit rejected");
+  runtime.dispose();
+});
+
+test("keeps active work bounded at four running and eight active tasks", async () => {
+  const sink = collect();
+  const sessions: FakeSession[] = [];
+  const runtime = createSubagentTool({
+    ...contextOptions(sink),
+    createSession: async () => {
+      const session = new FakeSession();
+      sessions.push(session);
+      return session;
+    },
+  });
+  const runs = await Promise.all(
+    Array.from({ length: 8 }, (_value, index) =>
+      executeSpawn(findTool(runtime.tools, "spawn_research"), {
+        title: `run-${index}`,
+        instruction: "wait",
+      }),
+    ),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(sessions.length, 4);
+  await assert.rejects(
+    executeSpawn(findTool(runtime.tools, "spawn_research"), {
+      title: "overflow",
+      instruction: "no",
+    }),
+    /At most 8 background tasks may be active/,
+  );
+  for (const run of runs) runtime.cancel(run.details.runId);
+  runtime.dispose();
+});
+
+const executeProposal = async (tool: CanvasProposalTool): Promise<CanvasProposal> => {
+  type ProposalExecutor = (
+    toolCallId: string,
+    proposal: CanvasProposal,
+  ) => Promise<{ readonly details: CanvasProposal }>;
+  // SAFETY: the extension context is unused by the proposal tool test.
+  const result = await (tool.execute as unknown as ProposalExecutor)("proposal-1", {
+    type: "shapes",
+    shapes: [{ type: "geo", x: 20, y: 30 }],
+  });
+  return result.details;
+};

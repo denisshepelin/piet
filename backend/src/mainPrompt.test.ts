@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CANVAS_SHAPE_REFERENCE, MAIN_SYSTEM_PROMPT } from "./mainPrompt.js";
+import {
+  CANVAS_SHAPE_REFERENCE,
+  MAIN_SYSTEM_PROMPT,
+  CANVAS_WORKER_SYSTEM_PROMPT,
+} from "./mainPrompt.js";
 
 test("main system prompt embeds the compact shape contract", () => {
   assert.ok(MAIN_SYSTEM_PROMPT.includes(CANVAS_SHAPE_REFERENCE));
@@ -15,6 +19,8 @@ test("shape contract calls out app-specific text and sizing rules", () => {
   assert.ok(CANVAS_SHAPE_REFERENCE.includes("Note shapes do not have w/h"));
   assert.ok(CANVAS_SHAPE_REFERENCE.includes("Frame labels use props.name"));
   assert.ok(CANVAS_SHAPE_REFERENCE.includes("Prefer startShapeId/endShapeId"));
-  assert.ok(MAIN_SYSTEM_PROMPT.includes("put_image for media"));
-  assert.ok(MAIN_SYSTEM_PROMPT.includes("put_draw for freehand strokes"));
+  assert.ok(MAIN_SYSTEM_PROMPT.includes("spawn_canvas"));
+  assert.ok(MAIN_SYSTEM_PROMPT.includes("Never change the shared camera unless explicitly asked"));
+  assert.ok(CANVAS_WORKER_SYSTEM_PROMPT.includes("propose_canvas"));
+  assert.ok(CANVAS_WORKER_SYSTEM_PROMPT.includes("have no live canvas tools"));
 });
