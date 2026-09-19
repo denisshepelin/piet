@@ -25,6 +25,10 @@ const getIntentAnchor = (editor: Editor): CanvasPoint => {
   return { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
 };
 
+/** Freezes canvas intent context at text submission or the start of a voice recording. */
+export const captureCanvasIntentContext = (editor: Editor): PromptCanvasContext =>
+  capturePromptCanvasContext(editor, getIntentAnchor(editor));
+
 /** Captures selection, pointer, and viewport context once when a text intent is submitted. */
 export const submitCanvasIntent = (
   editor: Editor,
@@ -34,8 +38,7 @@ export const submitCanvasIntent = (
   const trimmed = text.trim();
   if (!chat.ready || trimmed.length === 0) return false;
 
-  const anchor = getIntentAnchor(editor);
-  const canvasContext = capturePromptCanvasContext(editor, anchor);
+  const canvasContext = captureCanvasIntentContext(editor);
   chat.send(trimmed, canvasContext);
   return true;
 };

@@ -521,6 +521,40 @@ button {
   text-transform: uppercase;
 }
 
+.piet-voice {
+  margin-top: 6px;
+}
+
+.piet-voice__controls {
+  display: flex;
+  gap: 6px;
+}
+
+.piet-voice__controls .piet-button {
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.piet-voice__record {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.piet-voice__record[aria-pressed="true"] {
+  border-color: var(--piet-primary);
+}
+
+.piet-voice__transcript {
+  max-height: 80px;
+  margin: 6px 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
 @media (max-width: 600px) {
   .piet-composer {
     bottom: 68px;

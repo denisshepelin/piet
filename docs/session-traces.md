@@ -53,7 +53,7 @@ Rendering never delays the tool response or changes its result. Snapshot cloning
 
 ## Privacy
 
-These are development traces containing full prompts, tool output, drawing content, and potentially sensitive information visible on the canvas. Common structured credential keys are redacted, but secrets embedded in free text, URLs, or images cannot be reliably removed. Do not capture sensitive sessions or share traces without inspection. New trace directories are owner-only and files are mode `0600`; default log directories are gitignored. A custom `PIET_LOG_DIR` is the operator's responsibility.
+These are development traces containing full prompts, tool output, drawing content, and potentially sensitive information visible on the canvas. Submitted voice transcripts are ordinary prompts and are recorded here; raw microphone audio and interim or cancelled transcripts are not saved by Piet. Common structured credential keys are redacted, but secrets embedded in free text, URLs, or images cannot be reliably removed. Do not capture sensitive sessions or share traces without inspection. New trace directories are owner-only and files are mode `0600`; default log directories are gitignored. A custom `PIET_LOG_DIR` is the operator's responsibility.
 
 ## Ownership
 
