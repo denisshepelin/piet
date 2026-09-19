@@ -57,6 +57,8 @@ Mutations are validated and prepared in an isolated editor, including native edi
 
 The initial page policy is conservative: reject a request when its page is not the active page, rather than silently switching the user's page. Return to the task's page before retrying. Off-page background commits are not implemented.
 
+Model-facing canvas snapshots are rendered with a maximum 2048-pixel edge, including padding, at pixel ratio 1. Scaling happens before rasterization, preserves aspect ratio, and never enlarges small snapshots. Page-coordinate bounds and native shape summaries remain unchanged; this image budget is independent of monitor pixel density and does not resize the user's document.
+
 Native tldraw bindings, rich text, assets, coordinate transforms, and style properties remain authoritative. Native shape batches remain editable. Unsupported Mermaid kinds may use the SDK's SVG fallback.
 
 ## Style inheritance

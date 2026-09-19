@@ -11,7 +11,6 @@ import {
   toRichText,
   type Editor,
   type TLDrawShapeSegment,
-  type TLImageExportOptions,
   type TLParentId,
   type TLShapeId,
   type TLShapePartial,
@@ -44,6 +43,7 @@ import {
   type CanvasStyleProfile,
 } from "./canvasFormat.ts";
 import { detectLints } from "./canvasLints.ts";
+import { canvasSnapshotImageOptions, canvasSnapshotImageBase64 } from "./canvasSnapshotImage.ts";
 import {
   collectCanvasStagedChanges,
   commitCanvasStagedChanges,
@@ -82,22 +82,6 @@ const unionBounds = (boundsList: CanvasBounds[]): CanvasBounds | undefined => {
   const maxY = Math.max(...boundsList.map((bounds) => bounds.y + bounds.h));
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 };
-
-const blobToBase64 = (blob: Blob): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result);
-      const match = result.match(/^data:[^;]+;base64,(.*)$/);
-      if (!match) {
-        reject(new Error("canvas image could not be converted to base64"));
-        return;
-      }
-      resolve(match[1]!);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("canvas image could not be read"));
-    reader.readAsDataURL(blob);
-  });
 
 const normalizeScope = (scope: CanvasScope | undefined): CanvasScope => scope ?? "viewport";
 
@@ -356,15 +340,12 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       const bounds = scope === "viewport" ? viewport : unionBounds(boundsList);
       if (!bounds) return undefined;
       await editor.fonts.loadRequiredFontsForCurrentPage(editor.options.maxFontsToLoadBeforeRender);
-      const imageOptions: TLImageExportOptions = {
-        format: "png",
-        background: false,
-        padding: scope === "viewport" ? 0 : 16,
-        scale: 1,
-        bounds: scope === "viewport" ? boundsToBox(bounds) : undefined,
+      const imageOptions = {
+        ...canvasSnapshotImageOptions(bounds, scope === "viewport" ? 0 : 16),
+        bounds: boundsToBox(bounds),
       };
       const image = await editor.toImage(shapeIds, imageOptions);
-      return { mimeType: "image/png", data: await blobToBase64(image.blob), bounds };
+      return { mimeType: "image/png", data: await canvasSnapshotImageBase64(image.blob), bounds };
     };
 
     const getCanvas = async (
