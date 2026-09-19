@@ -340,7 +340,7 @@ test("unsupported Mermaid diagrams import through the native SVG asset handler",
   expect(snapshot.shapes[0]?.type).toBe("image");
 });
 
-test("task cards can cancel work and retain completed results until dismissal", async ({
+test("root request cards stay fixed during zoom and automatically move completed work to history", async ({
   page,
 }) => {
   const browser = new CanvasBrowser(page);
@@ -359,12 +359,43 @@ test("task cards can cancel work and retain completed results until dismissal", 
     status: "running",
     activity: "Preparing shapes",
   };
+  const root: RunSnapshot = {
+    ...run,
+    runId: run.promptId,
+    title: "Sketch my architecture",
+    kind: "response",
+    status: "done",
+    result: "Drawing started",
+    createdAt: run.createdAt - 1,
+  };
+  const parallel: RunSnapshot = {
+    ...run,
+    runId: "other:root",
+    promptId: "other:root",
+    title: "Another question",
+  };
+  const sibling: RunSnapshot = {
+    ...run,
+    runId: "research:sibling",
+    kind: "research",
+    title: "Check architecture",
+  };
+  browser.send({ type: "run_update", run: root });
   browser.send({ type: "run_update", run });
-  await expect(page.getByText("Architecture sketch").first()).toBeVisible();
-  await page
-    .getByRole("button", { name: /cancel/i })
-    .first()
-    .click();
+  browser.send({ type: "run_update", run: sibling });
+  browser.send({ type: "run_update", run: parallel });
+  const ongoing = page.getByRole("region", { name: "Ongoing requests" });
+  const card = ongoing.getByRole("article", { name: root.title, exact: true });
+  await expect(ongoing.getByRole("article")).toHaveCount(2);
+  await expect(card).toBeVisible();
+  const position = await card.boundingBox();
+  await browser.request("set_view", { bounds: { x: 10000, y: 10000, w: 100, h: 100 } });
+  await expect(card).toBeVisible();
+  expect(await card.boundingBox()).toEqual(position);
+  await browser.request("set_view", { bounds: { x: -10000, y: -10000, w: 20000, h: 20000 } });
+  await expect(ongoing.getByRole("article")).toHaveCount(2);
+  expect(await card.boundingBox()).toEqual(position);
+  await card.getByRole("button", { name: `Cancel ${root.title}` }).click();
   await expect
     .poll(() =>
       browser.messages.some(
@@ -372,10 +403,37 @@ test("task cards can cancel work and retain completed results until dismissal", 
       ),
     )
     .toBe(true);
+  await expect
+    .poll(() =>
+      browser.messages.some(
+        (message) => message.type === "cancel_run" && message.runId === sibling.runId,
+      ),
+    )
+    .toBe(true);
+  expect(
+    browser.messages.some(
+      (message) => message.type === "cancel_run" && message.runId === parallel.runId,
+    ),
+  ).toBe(false);
   browser.send({
     type: "run_update",
     run: { ...run, status: "done", result: "The architecture is ready", sequence: 2 },
   });
-  await expect(page.getByText("Architecture sketch").first()).toBeVisible();
+  await expect(card).toBeVisible();
+  browser.send({
+    type: "run_update",
+    run: { ...sibling, status: "done", result: "Checked", sequence: 2 },
+  });
+  await expect(card).toHaveCount(0);
+  await expect(ongoing.getByRole("article")).toHaveCount(1);
+  await page.getByRole("button", { name: "Open Piet inspector" }).click();
+  const history = page.getByRole("complementary", { name: "Piet inspector" });
+  await history.locator("summary").filter({ hasText: root.title }).click();
+  await expect(history.getByText("The architecture is ready", { exact: true })).toBeVisible();
+  browser.send({
+    type: "run_update",
+    run: { ...parallel, status: "cancelled", reason: "Stopped", sequence: 2 },
+  });
+  await expect(ongoing).toHaveCount(0);
   await page.screenshot({ path: "test-results/canvas-control-center.png" });
 });

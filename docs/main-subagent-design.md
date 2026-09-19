@@ -5,7 +5,7 @@
 - The browser owns the one live tldraw editor and its locally persisted document.
 - The canvas is the primary workspace. A compact composer submits intent; conversation history and model settings live in an optional inspector.
 - Input modality does not own task execution. Text captures an intent with submission-time page, selection, anchor, and style context. A future voice adapter can submit a transcript through the same boundary. Audio recording/transcription is not implemented.
-- Slow work has a task identity and a visible, page-anchored window. Execution UI is not stored as canvas shapes and does not pollute exports or undo history.
+- Slow work has a task identity and belongs to one originating user request. One compact, screen-fixed card represents each ongoing root request, regardless of how many workers or synthesis turns it starts. Execution UI is not stored as canvas shapes and does not pollute exports or undo history.
 - Workers receive immutable relevant context, not synchronized editors or the complete conversation.
 - The user can keep drawing. Agent work must not hijack the camera or overwrite changed records silently.
 
@@ -29,13 +29,13 @@ main conversation
                                            prepared canvas commit
 ```
 
-The main agent decides what work to request. Only the browser executor mutates the live document. A drawing worker has `propose_canvas`, not live canvas tools: it returns a bounded native-shape batch, Mermaid source, or an image import. The runtime applies that proposal without requiring another model turn to draw it again. Completion is recorded in the main conversation without triggering another drawing loop.
+The main agent decides what work to request. Only the browser executor mutates the live document. A drawing worker has `propose_canvas`, not live canvas tools: it returns a bounded native-shape batch, Mermaid source, or an image import. The runtime applies that proposal without requiring another model turn to draw it again. Completion is recorded in the main conversation without triggering another drawing loop. Browser layout warnings are retained in the task result and replace an unqualified worker success summary; a committed drawing with warnings still needs cleanup. The runtime does not automatically repair or roll back overlapping layouts.
 
-Research tools and permissions are unchanged. Repository findings return to the main conversation for short synthesis; substantial resulting drawings are delegated separately.
+Research tools and permissions are unchanged. Repository findings return to the main conversation with the original user request and submission-time canvas context, including across retries and intervening user turns. Synthesis completes that request: selected worksheets and pros/cons columns receive concise canvas answers through a separate drawing task, rather than only a task-window summary. Explicit text-only requests remain text-only. The main agent and drawing worker share a default summary budget: at most three short bullets per column and one short recommendation. Evidence stays in history, and the main agent hands off already-condensed copy rather than asking the worker to squeeze a report into fixed space. This is model guidance, not a deterministic text-fitting guarantee.
 
 ## Task lifecycle
 
-Each task emits complete snapshots with `runId`, originating `promptId`, `pageId`, page-space anchor, title, kind, timestamps, and a monotonically increasing sequence.
+Each task emits complete snapshots with `runId`, originating `promptId`, `pageId`, page-space anchor, title, kind, timestamps, and a monotonically increasing sequence. `runId` identifies the individual task or response turn; `promptId` stays the root user request across research synthesis, further delegation, and retries. Stream messages still use their individual turn identity.
 
 ```text
 queued -> running -> done
@@ -63,11 +63,13 @@ Native tldraw bindings, rich text, assets, coordinate transforms, and style prop
 
 Explicit shape properties override the captured style profile. The profile uses shared selected styles when available and current drawing styles as fallback. Workers also receive selected shape summaries. Inheritance does not change the user's next-shape settings.
 
+Existing structures take placement precedence over the task-window anchor: workers fill open column space while preserving headings and doodles. For visual references such as freehand drawings, the main agent is instructed to request a canvas image and describe the observed style in the drawing handoff, because compact shape summaries omit stroke geometry and workers do not inherit tool images. This visual read is fresh state, not a submission-time screenshot.
+
 This provides native color/font/size/dash/fill/opacity matching, including Mermaid's default styles. Automatic nearby-cluster style inference and learned imitation of a user's freehand stroke character are not implemented.
 
 ## UI and connection lifetime
 
-Task windows follow page pan/zoom, support focus and cancellation, and retain terminal results until dismissed. Crowded or off-page tasks remain available through navigation/inspection rather than moving the camera automatically. Window geometry and expand/collapse state are local presentation state, not document records.
+Ongoing request cards live in a compact screen-space stack independent of page pan/zoom and overlap allocation. Each card shows the root question and current activity, expands to show its tasks, and cancels all currently active tasks in that request. A request stays active while any of its response turns or workers is queued or running. Once all tasks are terminal, its card disappears automatically; results, errors, retry controls, and origin navigation remain in grouped inspector history. Completed requests are not dismissed merely by leaving the overlay. History remains bounded and connection-local, not durable document content.
 
 The control connection and agent sessions are in memory. Disconnect aborts unfinished work; the browser retains received results and the locally persisted canvas. Reload starts a new conversation. There is no reconnect replay, cross-device task persistence, or document collaboration server.
 

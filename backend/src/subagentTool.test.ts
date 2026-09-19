@@ -220,10 +220,12 @@ test("extracts only the last assistant message and reports the complete lifecycl
 test("reports failed initialization and makes the failed run retryable", async () => {
   const sink = collect();
   let attempts = 0;
+  let userRequest = "Fill the selected pros and cons";
   const successfulSession = new FakeSession();
   successfulSession.onPrompt = (current) => current.finish("recovered");
   const runtime = createSubagentTool({
     ...contextOptions(sink),
+    getUserRequest: () => userRequest,
     createSession: async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("no model configured");
@@ -237,10 +239,13 @@ test("reports failed initialization and makes the failed run retryable", async (
   });
   await waitFor(() => sink.updates().at(-1)?.status === "error");
   assert.equal(sink.results[0]?.error, "no model configured");
+  assert.equal(sink.results[0]?.userRequest, "Fill the selected pros and cons");
+  userRequest = "A different request";
 
   runtime.retry(spawned.details.runId);
   await waitFor(() => sink.results.length === 2);
   assert.equal(sink.results[1]?.result, "recovered");
+  assert.equal(sink.results[1]?.userRequest, "Fill the selected pros and cons");
   assert.equal(attempts, 2);
   runtime.dispose();
 });
