@@ -109,6 +109,40 @@ test("batch drawing commits native shapes and bindings without a permanent sideb
   expect(snapshot.image).toBeUndefined();
 });
 
+test("large canvas images are resized before sending while shape coordinates remain unchanged", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+  await browser.request("put_shape", {
+    shape: { id: "large-board", type: "geo", x: 0, y: 0, props: { w: 12000, h: 9000 } },
+  });
+  await browser.request("set_view", { bounds: { x: 0, y: 0, w: 24000, h: 18000 } });
+  await page.mouse.click(700, 500);
+  await page.keyboard.press("ControlOrMeta+a");
+  await Promise.all(
+    (["page", "selection", "viewport"] as const).map(async (scope) => {
+      const snapshot = await browser.request("get_canvas", { scope, includeImage: true });
+      expect(snapshot.image).toBeDefined();
+      if (!snapshot.image) throw new Error("Missing canvas snapshot image");
+      const dimensions = await page.evaluate(async (data) => {
+        const response = await fetch(`data:image/png;base64,${data}`);
+        const image = await createImageBitmap(await response.blob());
+        const result = { w: image.width, h: image.height };
+        image.close();
+        return result;
+      }, snapshot.image.data);
+      expect(dimensions.w).toBeGreaterThan(0);
+      expect(dimensions.h).toBeGreaterThan(0);
+      expect(dimensions.w).toBeLessThanOrEqual(2048);
+      expect(dimensions.h).toBeLessThanOrEqual(2048);
+      expect(snapshot.shapes[0]?.w).toBe(12000);
+      expect(snapshot.shapes[0]?.h).toBe(9000);
+      expect(snapshot.image.bounds?.w).toBeGreaterThanOrEqual(12000);
+    }),
+  );
+});
+
 test("invalid batches, expired requests, and stale edits leave existing shapes intact", async ({
   page,
 }) => {
