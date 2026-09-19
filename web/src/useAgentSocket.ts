@@ -4,6 +4,7 @@ import {
   type AgentRole,
   type CanvasRequest,
   type CanvasToolResult,
+  type CanvasTraceMessage,
   type ClientLogEvent,
   type ClientMessage,
   type ModelRef,
@@ -27,6 +28,7 @@ export type SubagentRun = RunSnapshot;
 export type CanvasRequestHandler = (
   request: CanvasRequest,
   signal?: AbortSignal,
+  emitTrace?: (message: CanvasTraceMessage) => void,
 ) => Promise<CanvasToolResult>;
 /** Input-independent conversation commands; canvas context is captured by the input adapter. */
 export type AgentChat = Omit<ChatState, "closedPrompts" | "dismissedRuns"> & {
@@ -119,7 +121,13 @@ export const useAgentSocket = (url: string): AgentChat => {
       const controller = new AbortController();
       pendingCanvas.set(message.requestId, controller);
       const startedAt = performance.now();
-      void handler(message, controller.signal)
+      void handler(message, controller.signal, (trace) => {
+        try {
+          send(trace);
+        } catch {
+          log("web.canvas_trace_send_error", { requestId: message.requestId }, "error");
+        }
+      })
         .then((result) => {
           log("web.canvas_request_ok", {
             requestId: message.requestId,
@@ -132,7 +140,12 @@ export const useAgentSocket = (url: string): AgentChat => {
           const detail = error instanceof Error ? error.message : String(error);
           log(
             "web.canvas_request_error",
-            { requestId: message.requestId, action: message.action, detail },
+            {
+              requestId: message.requestId,
+              action: message.action,
+              ms: Math.round(performance.now() - startedAt),
+              detail,
+            },
             "error",
           );
           send({ type: "canvas_response", requestId: message.requestId, ok: false, error: detail });

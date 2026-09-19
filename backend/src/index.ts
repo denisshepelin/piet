@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import { join } from "node:path";
 import type { WebSocket } from "ws";
 import { createCanvasSocketServer } from "./canvasSocketServer.js";
 import {
@@ -10,7 +12,7 @@ import {
 import { CanvasConnection } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
 import { MAIN_SYSTEM_PROMPT, CANVAS_WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
-import { createEventLog } from "./logger.js";
+import { createSessionTrace } from "./sessionTrace.js";
 import { parseClientMessage, type ServerMessage } from "@piet/protocol";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -24,7 +26,26 @@ const RESEARCH_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. Yo
 
 Inspect the repository, run read-only commands, and report concise findings. Do not edit files or run commands that modify the repository. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, evidence with file paths, verification, blockers, and canvas-ready content.`;
 
-const logEvent = createEventLog();
+const logDirectory = process.env.PIET_LOG_DIR ?? "logs";
+const captureTrace = process.env.PIET_CANVAS_TRACE !== "0";
+const mirrorStdout = process.env.PIET_LOG_STDOUT === "1";
+const activeTraces = new Set<ReturnType<typeof createSessionTrace>>();
+const readGitState = (): { revision: string; dirty: boolean } | undefined => {
+  try {
+    const options = {
+      encoding: "utf8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    } satisfies ExecFileSyncOptionsWithStringEncoding;
+    return {
+      revision: execFileSync("git", ["rev-parse", "HEAD"], options).trim(),
+      dirty: execFileSync("git", ["status", "--porcelain"], options).trim().length > 0,
+    };
+  } catch {
+    return undefined;
+  }
+};
+const gitState = readGitState();
 
 /**
  * Model runtime, settings, and resource loaders are immutable and process-scoped.
@@ -72,14 +93,28 @@ const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
 };
 
-const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>([
-  "text_delta",
-  "tool_start",
-  "tool_end",
-]);
+const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>(["text_delta"]);
 
 wss.on("connection", async (socket) => {
-  const connId = randomUUID().slice(0, 8);
+  const connId = randomUUID();
+  const directory = join(logDirectory, connId);
+  const trace = createSessionTrace({
+    directory,
+    manifest: {
+      sessionId: connId,
+      cwd: process.cwd(),
+      nodeVersion: process.version,
+      ...(gitState ? { git: gitState } : {}),
+      captureTrace,
+      mainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
+      researchModel: { provider: DEFAULT_RESEARCH_MODEL_PROVIDER, id: DEFAULT_RESEARCH_MODEL_ID },
+    },
+    now: () => new Date(),
+    mirrorStdout,
+  });
+  activeTraces.add(trace);
+  const { logEvent } = trace;
+  console.log(`[log] session trace: ${directory}`);
   console.log(`[ws] client connected (${connId})`);
   logEvent({ source: "backend", connId, event: "ws.connect" });
 
@@ -95,6 +130,7 @@ wss.on("connection", async (socket) => {
     actor,
     isConnected: () => socket.readyState === socket.OPEN,
     send: sendToClient,
+    captureTrace,
   });
   const mainAgent = new MainAgentManager({
     actor,
@@ -138,6 +174,10 @@ wss.on("connection", async (socket) => {
       return;
     }
 
+    if (message.type === "canvas_trace") {
+      if (captureTrace) logEvent({ source: "web", connId, event: "canvas.trace", data: message });
+      return;
+    }
     logEvent({ source: "backend", connId, event: `ws.in.${message.type}`, data: message });
     if (message.type === "canvas_response") {
       canvasConnection.handleResponse(message);
@@ -159,6 +199,7 @@ wss.on("connection", async (socket) => {
     logEvent({ source: "backend", connId, event: "ws.close" });
     canvasConnection.dispose();
     mainAgent.dispose();
+    void trace.close().finally(() => activeTraces.delete(trace));
   });
 
   try {
@@ -171,6 +212,20 @@ wss.on("connection", async (socket) => {
       message: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+const shutdown = async (): Promise<void> => {
+  const serverClosed = new Promise<void>((resolve) => wss.close(() => resolve()));
+  for (const socket of wss.clients) socket.terminate();
+  await serverClosed;
+  await Promise.all([...activeTraces].map((trace) => trace.close()));
+  process.exit(0);
+};
+process.once("SIGINT", () => {
+  void shutdown();
+});
+process.once("SIGTERM", () => {
+  void shutdown();
 });
 
 console.log(`[ws] listening on ws://localhost:${PORT}`);
