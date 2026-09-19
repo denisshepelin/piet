@@ -24,6 +24,7 @@ import type {
   CanvasSnapshotImage,
   CanvasSnapshot,
   CanvasToolResult,
+  CanvasTraceMessage,
   DeleteShapesResult,
   MoveShapesResult,
   PutCanvasShape,
@@ -44,6 +45,7 @@ import {
 } from "./canvasFormat.ts";
 import { detectLints } from "./canvasLints.ts";
 import { canvasSnapshotImageOptions, canvasSnapshotImageBase64 } from "./canvasSnapshotImage.ts";
+import { createCanvasTraceCapture } from "./canvasTraceCapture.ts";
 import {
   collectCanvasStagedChanges,
   commitCanvasStagedChanges,
@@ -321,6 +323,15 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
   const liveEditor = useEditor();
 
   useEffect(() => {
+    const traceCapture = createCanvasTraceCapture(liveEditor);
+    const traceEmitters = new Map<string, (message: CanvasTraceMessage) => void>();
+    const captureTrace = (request: CanvasRequest, phase: CanvasTraceMessage["phase"]): void => {
+      try {
+        traceCapture.capture(request, phase, traceEmitters.get(request.requestId));
+      } catch {
+        /* Debug capture cannot prevent a document commit. */
+      }
+    };
     const lintsFor = (
       shapeIds: TLShapeId[],
       targetEditor = liveEditor,
@@ -435,7 +446,10 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           }
         }
         checkRequestActive(editor, request, signal);
+        captureTrace(request, "before");
+        checkRequestActive(editor, request, signal);
         commitCanvasStagedChanges(editor, changes);
+        captureTrace(request, "after");
         return value;
       } finally {
         disposeCanvasStagingEditor(staging);
@@ -912,8 +926,12 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           return stageDocument(request, signal, (staging) => deleteShapes(request, staging));
         case "move_shapes":
           return stageDocument(request, signal, (staging) => moveShapes(request, staging));
-        case "set_view":
-          return setView(request);
+        case "set_view": {
+          captureTrace(request, "before");
+          const result = setView(request);
+          captureTrace(request, "after");
+          return result;
+        }
         default:
           throw new Error("canvas action is not supported");
       }
@@ -921,11 +939,31 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
 
     // Mermaid owns shared parser configuration; other preparation and canvas reads can proceed independently.
     let mermaidQueue = Promise.resolve();
-    const handler = (request: CanvasRequest, signal?: AbortSignal): Promise<CanvasToolResult> => {
+    const handler: CanvasRequestHandler = (request, signal, emitTrace) => {
       const run = async (): Promise<CanvasToolResult> => {
-        checkRequestActive(liveEditor, request, signal);
-        checkExpectedShapes(liveEditor, request);
-        return execute(request, signal);
+        if (emitTrace) traceEmitters.set(request.requestId, emitTrace);
+        try {
+          checkRequestActive(liveEditor, request, signal);
+          checkExpectedShapes(liveEditor, request);
+          if (request.action === "get_canvas" && request.params.includeImage === false) {
+            captureTrace(request, "read");
+          }
+          const result = await execute(request, signal);
+          if (
+            request.action === "get_canvas" &&
+            request.params.includeImage !== false &&
+            "shapes" in result &&
+            !result.image
+          ) {
+            captureTrace(request, "read");
+          }
+          return result;
+        } catch (error) {
+          captureTrace(request, "error");
+          throw error;
+        } finally {
+          traceEmitters.delete(request.requestId);
+        }
       };
       if (request.action !== "put_mermaid") return run();
       const result = mermaidQueue.then(run, run);
@@ -937,7 +975,11 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     };
 
     setCanvasRequestHandler(handler);
-    return () => setCanvasRequestHandler(null);
+    return () => {
+      setCanvasRequestHandler(null);
+      traceCapture.dispose();
+      traceEmitters.clear();
+    };
   }, [liveEditor, setCanvasRequestHandler]);
 
   return null;

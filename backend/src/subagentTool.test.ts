@@ -172,6 +172,7 @@ const contextOptions = (sink: ReturnType<typeof collect>) => ({
 
 test("extracts only the last assistant message and reports the complete lifecycle", async () => {
   const sink = collect();
+  const observed: unknown[] = [];
   const session = new FakeSession();
   session.onPrompt = (current) => {
     current.emit({
@@ -190,6 +191,7 @@ test("extracts only the last assistant message and reports the complete lifecycl
       assert.equal(proposalTool, undefined);
       return session;
     },
+    onSessionEvent: (context, event) => observed.push({ context, event }),
   });
 
   const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
@@ -205,6 +207,10 @@ test("extracts only the last assistant message and reports the complete lifecycl
   const completed = updates.at(-1);
   if (!completed || completed.status !== "done") throw new Error("expected completed run");
   assert.equal(completed.result, "final answer");
+  assert.deepEqual(observed[0], {
+    context: { runId: spawned.details.runId, promptId: "prompt:origin", kind: "research" },
+    event: { type: "tool_execution_start", toolName: "grep", args: { pattern: "CanvasRequest" } },
+  });
   assert.equal(sink.results[0]?.runId, spawned.details.runId);
   assert.equal(sink.results[0]?.promptId, "prompt:origin");
   assert.equal(sink.results[0]?.result, "final answer");

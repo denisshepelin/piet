@@ -63,6 +63,10 @@ export type SubagentToolOptions = {
   getUserRequest?: () => string;
   finalizeResult?: (result: ResearchResult, signal: AbortSignal) => Promise<string>;
   onResult: (result: ResearchResult) => void;
+  onSessionEvent?: (
+    context: { runId: string; promptId: string; kind: BackgroundTaskKind },
+    event: BackgroundSessionEvent,
+  ) => void;
   timeoutMs?: number;
   maxRunning?: number;
   maxActive?: number;
@@ -380,7 +384,13 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
         return;
       }
       run.session = session;
-      run.unsubscribe = session.subscribe((event) => handleSessionEvent(run, event));
+      run.unsubscribe = session.subscribe((event) => {
+        options.onSessionEvent?.(
+          { runId: run.runId, promptId: run.promptId, kind: run.kind },
+          event,
+        );
+        handleSessionEvent(run, event);
+      });
       run.phase = "working";
       await session.prompt(promptForTask(run));
       if (disposed || isTerminal(run.status)) return;

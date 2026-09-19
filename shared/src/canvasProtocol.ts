@@ -204,6 +204,7 @@ const requestFields = {
   pageId: id,
   contextId: id,
   deadlineAt: number,
+  captureTrace: Type.Optional(Type.Boolean()),
   expectedShapes: Type.Optional(Type.Record(id, text)),
   style: Type.Optional(style),
 };
@@ -308,6 +309,49 @@ const clientLog = Type.Object({
   event: text,
   data: Type.Optional(Type.Unknown()),
 });
+const canvasTraceSchema = Type.Object({
+  type: Type.Literal("canvas_trace"),
+  requestId: id,
+  contextId: id,
+  pageId: id,
+  action: Type.Union([
+    Type.Literal("get_canvas"),
+    Type.Literal("put_shape"),
+    Type.Literal("put_shapes"),
+    Type.Literal("put_mermaid"),
+    Type.Literal("put_image"),
+    Type.Literal("put_draw"),
+    Type.Literal("put_highlight"),
+    Type.Literal("put_line"),
+    Type.Literal("update_shape"),
+    Type.Literal("delete_shapes"),
+    Type.Literal("move_shapes"),
+    Type.Literal("set_view"),
+  ]),
+  phase: Type.Union([
+    Type.Literal("before"),
+    Type.Literal("after"),
+    Type.Literal("read"),
+    Type.Literal("error"),
+  ]),
+  capturedAt: Type.String(),
+  outcome: Type.Union([
+    Type.Object({
+      status: Type.Literal("captured"),
+      image: Type.Object({
+        ...snapshotImage.properties,
+        data: Type.String({ maxLength: 12_000_000 }),
+      }),
+      document: properties,
+      viewport: bounds,
+    }),
+    Type.Object({ status: Type.Literal("skipped"), reason: text }),
+    Type.Object({ status: Type.Literal("error"), error: text }),
+  ]),
+});
+/** Debug-only canvas artifacts travel separately from model-visible tool responses. */
+export type CanvasTraceMessage = Static<typeof canvasTraceSchema>;
+
 const clientSchema = Type.Union([
   Type.Object({ type: Type.Literal("prompt"), id, text, canvasContext: promptContext }),
   Type.Object({ type: Type.Literal("set_model"), role, provider: id, modelId: id }),
@@ -319,6 +363,7 @@ const clientSchema = Type.Union([
     events: Type.Array(clientLog, { maxItems: 100 }),
   }),
   canvasResponseSchema,
+  canvasTraceSchema,
   Type.Object({ type: Type.Literal("ping") }),
 ]);
 const serverOtherSchema = Type.Union([

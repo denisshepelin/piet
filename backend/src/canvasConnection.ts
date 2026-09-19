@@ -30,6 +30,7 @@ type CanvasConnectionOptions = {
   isConnected: () => boolean;
   send: (message: ServerMessage) => void;
   timeoutMs?: number;
+  captureTrace?: boolean;
 };
 
 /** Canvas RPC infers the result from the action; callers cannot select an unrelated result type. */
@@ -89,6 +90,7 @@ export class CanvasConnection {
         params,
         ...context,
         deadlineAt: Date.now() + timeoutMs,
+        ...(this.#options.captureTrace ? { captureTrace: true } : {}),
       } as CanvasRequest;
       try {
         this.#options.send(request);

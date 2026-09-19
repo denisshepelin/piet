@@ -73,6 +73,47 @@ test("canvas results are validated against the original action", () => {
   assert.equal(isCanvasActionResult("get_canvas", { deletedShapeIds: [] }), false);
 });
 
+test("canvas trace messages validate artifacts and remain separate from tool responses", () => {
+  const trace = {
+    type: "canvas_trace",
+    requestId: "request:a",
+    contextId: "context:a",
+    pageId: "page:a",
+    action: "put_shapes",
+    phase: "after",
+    capturedAt: "2026-07-10T10:00:00Z",
+    outcome: {
+      status: "captured",
+      image: { mimeType: "image/png", data: "aGVsbG8=" },
+      document: {},
+      viewport: { x: 0, y: 0, w: 100, h: 100 },
+    },
+  };
+  assert.equal(parseClientMessage(JSON.stringify(trace)).ok, true);
+  assert.equal(parseServerMessage(JSON.stringify({ ...request, captureTrace: true })).ok, true);
+  for (const invalid of [
+    { ...trace, requestId: undefined },
+    { ...trace, action: "unknown" },
+    { ...trace, phase: "unknown" },
+    { ...trace, outcome: { status: "captured" } },
+    {
+      ...trace,
+      outcome: { ...trace.outcome, image: { mimeType: "image/jpeg", data: "aGVsbG8=" } },
+    },
+    {
+      ...trace,
+      outcome: { ...trace.outcome, image: { mimeType: "image/png", data: "x".repeat(12_000_001) } },
+    },
+  ])
+    assert.equal(parseClientMessage(JSON.stringify(invalid)).ok, false);
+  for (const outcome of [
+    { status: "skipped", reason: "capacity" },
+    { status: "error", error: "render failed" },
+  ]) {
+    assert.equal(parseClientMessage(JSON.stringify({ ...trace, outcome })).ok, true);
+  }
+});
+
 test("cancel and retry commands require a run identity", () => {
   for (const type of ["cancel_run", "retry_run"]) {
     assert.equal(parseClientMessage(JSON.stringify({ type, runId: "run:a" })).ok, true);

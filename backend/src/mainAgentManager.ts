@@ -139,6 +139,16 @@ export class MainAgentManager {
         return session;
       },
       send,
+      onSessionEvent: (context, event) => {
+        if (event.type === "message_update" || event.type === "tool_execution_update") return;
+        logEvent({
+          source: "backend",
+          connId,
+          agent: context.kind,
+          event: "worker.session_event",
+          data: { ...context, event },
+        });
+      },
       getPromptId: () => this.#requireTurn().run.promptId,
       getUserRequest: () => this.#requireTurn().userRequest,
       getCanvasContext: () => this.#requireTurn().canvasContext,

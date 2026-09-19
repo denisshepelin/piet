@@ -1,4 +1,8 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSessionTrace } from "../../backend/src/sessionTrace.ts";
 import {
   parseClientMessage,
   isCanvasActionResult,
@@ -7,6 +11,7 @@ import {
   type CanvasActionResult,
   type CanvasRequest,
   type CanvasResponse,
+  type CanvasTraceMessage,
   type ClientMessage,
   type PromptCanvasContext,
   type RunSnapshot,
@@ -20,7 +25,10 @@ class CanvasBrowser {
   context: PromptCanvasContext | undefined;
   pending = new Map<string, (response: CanvasResponse) => void>();
   nextId = 0;
-  constructor(readonly page: Page) {}
+  constructor(
+    readonly page: Page,
+    readonly recordMessage: (message: ClientMessage) => void = () => undefined,
+  ) {}
   async open(): Promise<void> {
     await this.page.routeWebSocket(/localhost:8787/, (socket) => {
       this.socket = socket;
@@ -28,6 +36,7 @@ class CanvasBrowser {
         const parsed = parseClientMessage(raw.toString());
         if (!parsed.ok) throw parsed.error;
         this.messages.push(parsed.value);
+        this.recordMessage(parsed.value);
         if (parsed.value.type === "prompt") this.context = parsed.value.canvasContext;
         if (parsed.value.type === "canvas_response")
           this.pending.get(parsed.value.requestId)?.(parsed.value);
@@ -49,7 +58,7 @@ class CanvasBrowser {
     action: A,
     params: CanvasActionParams<A>,
     overrides: Partial<
-      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style">
+      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace">
     > = {},
   ): { requestId: string; result: Promise<CanvasResponse> } {
     if (!this.context) throw new Error("Browser test has no canvas context");
@@ -73,7 +82,7 @@ class CanvasBrowser {
     action: A,
     params: CanvasActionParams<A>,
     overrides: Partial<
-      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style">
+      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace">
     > = {},
   ): Promise<CanvasActionResult<A>> {
     const response = await this.begin(action, params, overrides).result;
@@ -83,6 +92,165 @@ class CanvasBrowser {
     return response.result;
   }
 }
+
+test("canvas traces freeze commit boundaries without adding images to mutation results", async ({
+  page,
+}) => {
+  const directory = await mkdtemp(join(tmpdir(), "piet-browser-trace-"));
+  const trace = createSessionTrace({
+    directory,
+    manifest: { sessionId: "browser-test" },
+    now: () => new Date(),
+    mirrorStdout: false,
+  });
+  try {
+    const browser = new CanvasBrowser(page, (message) =>
+      trace.logEvent({ source: "web", connId: "browser-test", event: message.type, data: message }),
+    );
+    await browser.open();
+    const operation = browser.begin(
+      "put_shape",
+      {
+        shape: { id: "traced", type: "geo", text: "Original", props: { w: 300, h: 100 } },
+      },
+      { captureTrace: true },
+    );
+    const response = await operation.result;
+    expect(response.ok).toBe(true);
+    if (response.ok) expect(response.result).not.toHaveProperty("image");
+    await browser.request("update_shape", {
+      shape: { id: "shape:traced", type: "geo", text: "Later" },
+    });
+    const traces = () =>
+      browser.messages.filter(
+        (message): message is CanvasTraceMessage =>
+          message.type === "canvas_trace" && message.requestId === operation.requestId,
+      );
+    await expect.poll(() => traces().length).toBe(2);
+    const before = traces().find((capture) => capture.phase === "before");
+    const after = traces().find((capture) => capture.phase === "after");
+    expect(before?.outcome.status).toBe("captured");
+    expect(after?.outcome.status).toBe("captured");
+    if (before?.outcome.status !== "captured" || after?.outcome.status !== "captured")
+      throw new Error("Missing trace captures");
+    expect(before.outcome.document).not.toHaveProperty("shape:traced");
+    expect(JSON.stringify(after.outcome.document["shape:traced"])).toContain("Original");
+    expect(JSON.stringify(after.outcome.document["shape:traced"])).not.toContain("Later");
+    expect(after.contextId).toBe("test");
+    const dimensions = await page.evaluate(async (data) => {
+      const fetched = await fetch(`data:image/png;base64,${data}`);
+      const image = await createImageBitmap(await fetched.blob());
+      const size = { w: image.width, h: image.height };
+      image.close();
+      return size;
+    }, after.outcome.image.data);
+    expect(dimensions.w).toBeGreaterThan(1);
+    expect(dimensions.w).toBeLessThanOrEqual(2048);
+    expect(dimensions.h).toBeLessThanOrEqual(2048);
+    const failed = browser.begin(
+      "update_shape",
+      { shape: { id: "shape:missing", type: "geo" } },
+      { captureTrace: true },
+    );
+    expect((await failed.result).ok).toBe(false);
+    await expect
+      .poll(() =>
+        browser.messages.some(
+          (message) =>
+            message.type === "canvas_trace" &&
+            message.requestId === failed.requestId &&
+            message.phase === "error",
+        ),
+      )
+      .toBe(true);
+    const read = browser.begin(
+      "get_canvas",
+      { scope: "page", includeImage: true },
+      { captureTrace: true },
+    );
+    const observed = await read.result;
+    if (!observed.ok || !("image" in observed.result) || !observed.result.image)
+      throw new Error("Missing model observation image");
+    await trace.close();
+    const events = (await readFile(join(directory, "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const saved = events.find(
+      (event) => event.data?.requestId === operation.requestId && event.data?.phase === "after",
+    );
+    expect(saved.data.outcome.image.data).toBeUndefined();
+    expect(await readFile(join(directory, saved.data.outcome.image.artifact))).toEqual(
+      Buffer.from(after.outcome.image.data, "base64"),
+    );
+    const savedRead = events.find(
+      (event) => event.data?.requestId === read.requestId && event.event === "canvas_response",
+    );
+    expect(await readFile(join(directory, savedRead.data.result.image.artifact))).toEqual(
+      Buffer.from(observed.result.image.data, "base64"),
+    );
+    expect(
+      events.some(
+        (event) => event.data?.requestId === read.requestId && event.event === "canvas_trace",
+      ),
+    ).toBe(false);
+  } finally {
+    await trace.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("debug read capture is separate from model-visible images and can be disabled", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+  const read = browser.begin("get_canvas", { includeImage: false }, { captureTrace: true });
+  const response = await read.result;
+  if (!response.ok) throw new Error(response.error);
+  expect(response.result).not.toHaveProperty("image");
+  await expect
+    .poll(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "canvas_trace" &&
+          message.requestId === read.requestId &&
+          message.phase === "read" &&
+          message.outcome.status === "captured",
+      ),
+    )
+    .toBe(true);
+  const emptyRead = browser.begin("get_canvas", { includeImage: true }, { captureTrace: true });
+  expect((await emptyRead.result).ok).toBe(true);
+  await expect
+    .poll(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "canvas_trace" &&
+          message.requestId === emptyRead.requestId &&
+          message.phase === "read" &&
+          message.outcome.status === "captured",
+      ),
+    )
+    .toBe(true);
+  await browser.request("put_shape", { shape: { type: "geo", text: "Untraced" } });
+  expect(browser.messages.filter((message) => message.type === "canvas_trace")).toHaveLength(2);
+  const wrongPage = browser.begin(
+    "delete_shapes",
+    { ids: [] },
+    { captureTrace: true, pageId: "page:elsewhere" },
+  );
+  expect((await wrongPage.result).ok).toBe(false);
+  expect(
+    browser.messages.some(
+      (message) =>
+        message.type === "canvas_trace" &&
+        message.requestId === wrongPage.requestId &&
+        message.outcome.status === "skipped" &&
+        message.outcome.reason === "Canvas trace target page is not active",
+    ),
+  ).toBe(true);
+});
 
 test("batch drawing commits native shapes and bindings without a permanent sidebar", async ({
   page,
