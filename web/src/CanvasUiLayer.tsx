@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactElement, type ReactNode } from "re
 import type { TLComponents } from "tldraw";
 import type { AgentChat } from "./useAgentSocket.ts";
 import { CanvasComposer } from "./CanvasComposer.tsx";
-import { SubagentWindows } from "./SubagentWindows.tsx";
+import { CanvasRequestCards } from "./CanvasRequestCards.tsx";
 
 const CanvasUiChatContext = createContext<AgentChat | null>(null);
 
@@ -23,12 +23,12 @@ const useCanvasUiChat = (): AgentChat => {
   return chat;
 };
 
-/** Stable tldraw front-layer component for composer and page-anchored task windows. */
+/** Stable tldraw front layer for the composer and screen-fixed ongoing requests. */
 export const CanvasInFrontOfTheCanvas = (): ReactElement => {
   const chat = useCanvasUiChat();
   return (
     <>
-      <SubagentWindows runs={chat.runs} actions={chat} />
+      <CanvasRequestCards runs={chat.runs} actions={chat} />
       <CanvasComposer chat={chat} />
     </>
   );

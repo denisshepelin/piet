@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CANVAS_SHAPE_REFERENCE,
+  CANVAS_RESEARCH_SUMMARY_GUIDANCE,
   MAIN_SYSTEM_PROMPT,
   CANVAS_WORKER_SYSTEM_PROMPT,
 } from "./mainPrompt.js";
@@ -12,6 +13,27 @@ test("main system prompt embeds the compact shape contract", () => {
   for (const type of ["geo", "text", "note", "arrow", "frame"]) {
     assert.ok(CANVAS_SHAPE_REFERENCE.includes(`type: "${type}"`));
   }
+});
+
+test("canvas guidance fills selected structures and carries visual style to workers", () => {
+  assert.match(MAIN_SYSTEM_PROMPT, /empty Pros\/Cons columns/);
+  assert.match(MAIN_SYSTEM_PROMPT, /get_canvas with includeImage true/);
+  assert.match(MAIN_SYSTEM_PROMPT, /worker cannot see your tool images/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /beneath the selected Pros and Cons headings/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /not a mandatory drawing origin/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /font draw/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /dash draw/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /Preserve headings and doodles/);
+});
+
+test("main and drawing workers share a compact research summary budget and layout constraints", () => {
+  assert.ok(MAIN_SYSTEM_PROMPT.includes(CANVAS_RESEARCH_SUMMARY_GUIDANCE));
+  assert.ok(CANVAS_WORKER_SYSTEM_PROMPT.includes(CANVAS_RESEARCH_SUMMARY_GUIDANCE));
+  assert.match(CANVAS_RESEARCH_SUMMARY_GUIDANCE, /at most 3 short bullets per column/);
+  assert.match(CANVAS_RESEARCH_SUMMARY_GUIDANCE, /already-shortened copy/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /constrains width, NOT height/);
+  assert.match(CANVAS_WORKER_SYSTEM_PROMPT, /Avoid blank lines/);
+  assert.match(CANVAS_SHAPE_REFERENCE, /LOCAL offsets/);
 });
 
 test("shape contract calls out app-specific text and sizing rules", () => {

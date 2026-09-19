@@ -42,6 +42,8 @@ export type ResearchResult = {
   readonly promptId: string;
   readonly title: string;
   readonly kind: BackgroundTaskKind;
+  /** Original user intent, retained across background handoffs and retries. */
+  readonly userRequest: string;
   /** Immutable canvas state inherited from the prompt that spawned this run. */
   readonly canvasContext: PromptCanvasContext;
   readonly result?: string;
@@ -58,6 +60,7 @@ export type SubagentToolOptions = {
   send: (message: ServerMessage) => void;
   getCanvasContext: () => PromptCanvasContext;
   getPromptId: () => string;
+  getUserRequest?: () => string;
   finalizeResult?: (result: ResearchResult, signal: AbortSignal) => Promise<string>;
   onResult: (result: ResearchResult) => void;
   timeoutMs?: number;
@@ -88,6 +91,7 @@ type RunRecord = {
   readonly title: string;
   readonly kind: BackgroundTaskKind;
   readonly instruction: string;
+  readonly userRequest: string;
   readonly expectedOutput?: string;
   readonly canvasContext: PromptCanvasContext;
   readonly createdAt: number;
@@ -399,6 +403,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
         promptId: run.promptId,
         title: run.title,
         kind: run.kind,
+        userRequest: run.userRequest,
         canvasContext: run.canvasContext,
         result: boundedResult(run.assistantText),
         ...(run.proposal ? { proposal: run.proposal } : {}),
@@ -428,6 +433,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
           promptId: run.promptId,
           title: run.title,
           kind: run.kind,
+          userRequest: run.userRequest,
           canvasContext: run.canvasContext,
           error: message,
           ...(run.proposal ? { proposal: run.proposal } : {}),
@@ -451,6 +457,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
           promptId: run.promptId,
           title: run.title,
           kind: run.kind,
+          userRequest: run.userRequest,
           canvasContext: run.canvasContext,
           error: "Background task ended without a terminal result.",
         });
@@ -501,6 +508,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
       title: task.title,
       kind,
       instruction: task.instruction,
+      userRequest: origin?.userRequest ?? options.getUserRequest?.() ?? task.instruction,
       ...(task.expectedOutput === undefined ? {} : { expectedOutput: task.expectedOutput }),
       canvasContext: origin?.canvasContext ?? options.getCanvasContext(),
       createdAt,
@@ -540,6 +548,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
     promptGuidelines: [
       "Use spawn_research for independent repository inspection, read-only commands, comparisons, or analysis.",
       "Fan out only when tasks are independent, using one spawn_research call per task.",
+      "For canvas decisions, request a ranked shortlist and one takeaway separately from supporting evidence. Do not ask for exhaustive lists to paste onto the board.",
       "Tell the user that the work is running in the background and finish this turn without waiting.",
     ],
     parameters: Type.Object({

@@ -40,7 +40,9 @@ class TaskBrowser {
   }
 }
 
-test("task window follows real canvas pan and zoom", async ({ page }) => {
+test("ongoing request card stays screen-fixed during real canvas pan and wheel zoom", async ({
+  page,
+}) => {
   const browser = new TaskBrowser(page);
   await browser.open();
   if (!browser.context) throw new Error("Missing canvas context");
@@ -56,11 +58,11 @@ test("task window follows real canvas pan and zoom", async ({ page }) => {
     updatedAt: Date.now(),
     sequence: 1,
     status: "running",
-    activity: "Following the canvas",
+    activity: "Reading repository",
   };
   browser.send({ type: "run_update", run });
 
-  const card = page.getByRole("article", { name: "Camera task task window" });
+  const card = page.getByRole("article", { name: "Camera task", exact: true });
   await expect(card).toBeVisible();
   const beforePan = await card.boundingBox();
   if (!beforePan) throw new Error("Task window has no screen bounds");
@@ -73,12 +75,12 @@ test("task window follows real canvas pan and zoom", async ({ page }) => {
   await page.mouse.move(canvasBounds.x + 720, canvasBounds.y + 600, { steps: 4 });
   await page.mouse.up({ button: "middle" });
 
-  await expect
-    .poll(async () => {
-      const bounds = await card.boundingBox();
-      return bounds ? Math.abs(bounds.x - beforePan.x) : 0;
-    })
-    .toBeGreaterThan(1);
+  const initialViewport = browser.context.viewport;
+  const input = page.getByRole("textbox", { name: "Ask pi about this canvas" });
+  await input.fill("Capture after pan");
+  await input.press("Enter");
+  await expect.poll(() => browser.context?.viewport.x).not.toBe(initialViewport.x);
+  expect(await card.boundingBox()).toEqual(beforePan);
   const beforeZoom = await card.boundingBox();
   if (!beforeZoom) throw new Error("Task window disappeared after pan");
   await page.mouse.click(canvasBounds.x + 800, canvasBounds.y + 600);
@@ -88,11 +90,6 @@ test("task window follows real canvas pan and zoom", async ({ page }) => {
   await page.mouse.wheel(0, -20);
   await page.keyboard.up("Control");
   if (previousZoom) await expect(zoomButton).not.toHaveText(previousZoom);
-  await expect
-    .poll(async () => {
-      const bounds = await card.boundingBox();
-      return bounds ? Math.abs(bounds.x - beforeZoom.x) : 0;
-    })
-    .toBeGreaterThan(1);
-  expect((await card.boundingBox())?.width).toBe(beforeZoom.width);
+  await expect(card).toBeVisible();
+  expect(await card.boundingBox()).toEqual(beforeZoom);
 });

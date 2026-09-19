@@ -5,6 +5,7 @@ import type { AgentRole, ModelRef } from "@piet/protocol";
 import type { AgentChat, ChatMessage } from "./useAgentSocket.ts";
 import type { RunSnapshot } from "@piet/protocol";
 import { canvasTaskOutput, isCanvasTaskActive } from "./canvasTasks.ts";
+import { groupCanvasRequests } from "./canvasRequestGroups.ts";
 
 const { useState } = React;
 type ReactElement = React.ReactElement;
@@ -154,10 +155,11 @@ const TaskInspectorRow = ({ task, chat }: { task: RunSnapshot; chat: AgentChat }
   );
 };
 
-/** Optional history and settings inspector; task windows remain the primary canvas UI. */
+/** Keeps request history and settings off the canvas, including automatically archived completions. */
 export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
   const editor = useEditor();
   const [section, setSection] = useState<"history" | "settings">("history");
+  const requests = groupCanvasRequests(chat.runs);
   const visibleMessages = chat.messages.filter((message) => message.role !== "thinking");
   const status = chat.ready ? (chat.busy ? "main working" : "ready") : "disconnected";
 
@@ -246,16 +248,32 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
             <section aria-labelledby="piet-tasks-heading">
               <div className="piet-inspector__section-heading">
                 <h2 id="piet-tasks-heading" className="piet-inspector__section-title">
-                  tasks
+                  request history
                 </h2>
-                <span>{chat.runs.length}</span>
+                <span>{requests.length}</span>
               </div>
               {chat.runs.length === 0 ? (
-                <p className="piet-inspector__empty">Long work will stay visible on the canvas.</p>
+                <p className="piet-inspector__empty">Completed requests will appear here.</p>
               ) : (
                 <div className="piet-inspector__tasks">
-                  {chat.runs.map((task) => (
-                    <TaskInspectorRow key={task.runId} task={task} chat={chat} />
+                  {[...requests].reverse().map((request) => (
+                    <details className="piet-request-history" key={request.promptId}>
+                      <summary>
+                        <strong>{request.title}</strong>
+                        <span>
+                          {request.activeRuns.length > 0
+                            ? "working"
+                            : request.runs.some((run) => run.status === "error")
+                              ? "error"
+                              : request.runs.some((run) => run.status === "cancelled")
+                                ? "cancelled"
+                                : "done"}
+                        </span>
+                      </summary>
+                      {request.runs.map((task) => (
+                        <TaskInspectorRow key={task.runId} task={task} chat={chat} />
+                      ))}
+                    </details>
                   ))}
                 </div>
               )}
