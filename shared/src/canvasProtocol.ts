@@ -453,7 +453,7 @@ export type CanvasAnchor = Static<typeof anchor>;
 export type CanvasStyle = Static<typeof style>;
 /** Canvas summaries include record fingerprints for optimistic edit preconditions. */
 export type CanvasShapeSummary = Static<typeof shapeSummary>;
-/** Submission-time context is independent of the input modality (text or a future voice transcript). */
+/** Intent context is captured at text submission or voice recording start, before later canvas edits. */
 export type PromptCanvasContext = Static<typeof promptContext>;
 /** Author attribution is metadata, not a separate canvas replica. */
 export type CanvasActor = Static<typeof actor>;

@@ -3,6 +3,8 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:c
 import { join } from "node:path";
 import type { WebSocket } from "ws";
 import { createCanvasSocketServer } from "./canvasSocketServer.js";
+import { createSonioxTranscriptionHandler } from "./sonioxTranscription.js";
+import { RedactedSecret } from "./redactedSecret.js";
 import {
   DefaultResourceLoader,
   ModelRuntime,
@@ -88,6 +90,12 @@ await Promise.all([
 ]);
 
 const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
+const handleTranscription = createSonioxTranscriptionHandler({
+  apiKey: process.env.SONIOX_API_KEY?.trim()
+    ? new RedactedSecret(process.env.SONIOX_API_KEY.trim())
+    : undefined,
+  onOutcome: (outcome) => console.log(`[voice] transcription ${outcome}`),
+});
 
 const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
@@ -95,7 +103,11 @@ const send = (socket: WebSocket, message: ServerMessage): void => {
 
 const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>(["text_delta"]);
 
-wss.on("connection", async (socket) => {
+wss.on("connection", async (socket, request) => {
+  if (request.url === "/transcription") {
+    handleTranscription(socket);
+    return;
+  }
   const connId = randomUUID();
   const directory = join(logDirectory, connId);
   const trace = createSessionTrace({

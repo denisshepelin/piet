@@ -32,6 +32,7 @@ export type CanvasRequestHandler = (
 ) => Promise<CanvasToolResult>;
 /** Input-independent conversation commands; canvas context is captured by the input adapter. */
 export type AgentChat = Omit<ChatState, "closedPrompts" | "dismissedRuns"> & {
+  transcriptionUrl: string;
   dismissRun: (runId: string) => void;
   cancelRun: (runId: string) => void;
   retryRun: (runId: string) => void;
@@ -183,6 +184,7 @@ export const useAgentSocket = (url: string): AgentChat => {
 
   return {
     ...state,
+    transcriptionUrl: new URL("/transcription", url).href,
     send,
     setCanvasRequestHandler,
     dismissRun: (runId) => setState((current) => dismissChatRun(current, runId)),

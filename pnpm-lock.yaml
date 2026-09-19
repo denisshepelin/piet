@@ -29,6 +29,9 @@ importers:
       '@piet/protocol':
         specifier: workspace:*
         version: link:../shared
+      typebox:
+        specifier: ^1.1.38
+        version: 1.1.38
       ws:
         specifier: ^8.21.1
         version: 8.21.1

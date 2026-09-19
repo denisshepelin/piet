@@ -2,6 +2,7 @@ import { useState, type FormEvent, type KeyboardEvent, type ReactElement } from 
 import { useEditor } from "tldraw";
 import { submitCanvasIntent } from "./canvasIntent.ts";
 import type { AgentChat } from "./useAgentSocket.ts";
+import { PushToTalkButton } from "./PushToTalkButton.tsx";
 
 /** Compact bottom-floating text control for submitting canvas-aware intents. */
 export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
@@ -77,6 +78,7 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
           send
         </button>
       </div>
+      <PushToTalkButton chat={chat} />
       {notice && notice.id !== dismissedNotice && (
         <div className="piet-composer__hint" role="alert">
           {notice.text}{" "}

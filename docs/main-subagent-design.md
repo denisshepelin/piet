@@ -4,7 +4,7 @@
 
 - The browser owns the one live tldraw editor and its locally persisted document.
 - The canvas is the primary workspace. A compact composer submits intent; conversation history and model settings live in an optional inspector.
-- Input modality does not own task execution. Text captures an intent with submission-time page, selection, anchor, and style context. A future voice adapter can submit a transcript through the same boundary. Audio recording/transcription is not implemented.
+- Input modality does not own task execution. Text captures an intent with submission-time page, selection, anchor, and style context. Push-to-talk voice captures the same context when recording starts and submits only a completed transcript through the same boundary. Streaming transcription uses Soniox; voice does not replace the main agent or add spoken responses. See [voice input](voice-input.md).
 - Slow work has a task identity and belongs to one originating user request. One compact, screen-fixed card represents each ongoing root request, regardless of how many workers or synthesis turns it starts. Execution UI is not stored as canvas shapes and does not pollute exports or undo history.
 - Workers receive immutable relevant context, not synchronized editors or the complete conversation.
 - The user can keep drawing. Agent work must not hijack the camera or overwrite changed records silently.
@@ -13,7 +13,7 @@
 
 ```text
 canvas UI
-  composer / future voice adapter
+  composer / push-to-talk transcription
   task windows + optional inspector
   live tldraw Editor
        |
