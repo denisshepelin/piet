@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSessionTrace } from "../../backend/src/sessionTrace.ts";
+import { submitTestVoiceRequest } from "./voice-test-driver.ts";
 import {
   parseClientMessage,
   isCanvasActionResult,
@@ -17,6 +18,11 @@ import {
   type RunSnapshot,
   type ServerMessage,
 } from "@piet/protocol";
+
+test.use({
+  permissions: ["microphone"],
+  launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
+});
 
 const actor = { id: "main:test", name: "Piet", color: "#2563eb" };
 
@@ -36,7 +42,7 @@ class CanvasBrowser {
     readonly recordMessage: (message: ClientMessage) => void = () => undefined,
   ) {}
   async open(): Promise<void> {
-    await this.page.routeWebSocket(/localhost:8787/, (socket) => {
+    await this.page.routeWebSocket(/localhost:8787\/?$/, (socket) => {
       this.socket = socket;
       socket.onMessage((raw) => {
         const parsed = parseClientMessage(raw.toString());
@@ -53,10 +59,7 @@ class CanvasBrowser {
       socket.send(JSON.stringify({ type: "ready", actor } satisfies ServerMessage));
     });
     await this.page.goto("/");
-    const input = this.page.getByRole("textbox", { name: "Ask pi about this canvas" });
-    await expect(input).toBeEnabled();
-    await input.fill("Capture this canvas");
-    await input.press("Enter");
+    await submitTestVoiceRequest(this.page, "Capture this canvas");
     await expect.poll(() => this.context?.page.id).toBeTruthy();
   }
   send(message: ServerMessage): void {
@@ -67,7 +70,10 @@ class CanvasBrowser {
     action: A,
     params: CanvasActionParams<A>,
     overrides: Partial<
-      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace">
+      Pick<
+        CanvasRequest,
+        "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace" | "requireCleanLayout"
+      >
     > = {},
   ): PendingCanvasResponse {
     if (!this.context) throw new Error("Browser test has no canvas context");
@@ -92,7 +98,10 @@ class CanvasBrowser {
     action: A,
     params: CanvasActionParams<A>,
     overrides: Partial<
-      Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace">
+      Pick<
+        CanvasRequest,
+        "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace" | "requireCleanLayout"
+      >
     > = {},
   ): Promise<CanvasActionResult<A>> {
     const response = await this.begin(action, params, overrides).result;
@@ -104,6 +113,104 @@ class CanvasBrowser {
     return response.result;
   }
 }
+
+test("strict proposals reject invalid or overlapping content without touching user artwork", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+  await browser.request("put_shape", {
+    shape: { id: "user-title", type: "text", text: "Keep me", x: 0, y: 0 },
+  });
+  const before = await browser.request("get_canvas", { scope: "page", includeImage: false });
+
+  for (const element of [
+    { id: "invalid", type: "geo", props: { rotation: 0.2 } },
+    { id: "overlap", type: "text", text: "Overlapping title", x: 0, y: 0 },
+  ]) {
+    // Exercise each failed transaction against the same unchanged live document.
+    // eslint-disable-next-line no-await-in-loop
+    const rejected = await browser.begin(
+      "put_shapes",
+      { shapes: [element] },
+      { requireCleanLayout: true },
+    ).result;
+
+    expect(rejected.ok).toBe(false);
+
+    if (!rejected.ok && element.id === "overlap") {
+      expect(rejected.error).toContain("measuredBounds");
+      expect(rejected.error).toContain("no changes committed");
+    }
+  }
+
+  const after = await browser.request("get_canvas", { scope: "page", includeImage: false });
+  expect(after.shapes).toEqual(before.shapes);
+});
+
+test("relative placement measures wrapped text and resolves dependencies before committing", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+
+  const result = await browser.request(
+    "put_shapes",
+    {
+      shapes: [
+        {
+          id: "footer",
+          type: "text",
+          text: "Recommendation",
+          x: 0,
+          placement: { below: ["left", "right"], gap: 32 },
+        },
+        {
+          id: "left",
+          type: "text",
+          text: "A long column with enough words to wrap across many lines",
+          x: 0,
+          y: 0,
+          props: { w: 150, autoSize: false },
+        },
+        {
+          id: "right",
+          type: "text",
+          text: "Short column",
+          x: 300,
+          y: 0,
+          props: { w: 150, autoSize: false },
+        },
+      ],
+    },
+    { requireCleanLayout: true },
+  );
+
+  expect(result.lints ?? []).toEqual([]);
+  const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
+  const footer = snapshot.shapes.find((element) => element.id === "shape:footer");
+  const columns = snapshot.shapes.filter((element) => element.id !== "shape:footer");
+  expect(footer?.y).toBeCloseTo(
+    Math.max(...columns.map((element) => element.y + (element.h ?? 0))) + 32,
+    0,
+  );
+
+  const cyclic = await browser.begin(
+    "put_shapes",
+    {
+      shapes: [
+        { id: "cycle-a", type: "text", text: "A", placement: { below: ["cycle-b"] } },
+        { id: "cycle-b", type: "text", text: "B", placement: { below: ["cycle-a"] } },
+      ],
+    },
+    { requireCleanLayout: true },
+  ).result;
+
+  expect(cyclic.ok).toBe(false);
+  expect(
+    (await browser.request("get_canvas", { scope: "page", includeImage: false })).shapes,
+  ).toEqual(snapshot.shapes);
+});
 
 test("canvas traces freeze commit boundaries without adding images to mutation results", async ({
   page,

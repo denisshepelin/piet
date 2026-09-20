@@ -5,8 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "tsx watch --env-file-if-exists=../.env src/index.ts",
+    "start": "node --env-file-if-exists=../.env dist/index.js",
     "build": "tsgo --build",
     "typecheck": "tsgo --noEmit",
     "test": "tsx --test src/*.test.ts"

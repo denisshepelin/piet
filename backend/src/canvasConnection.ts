@@ -17,6 +17,7 @@ export type CanvasRequestContext = {
   pageId: string;
   contextId: string;
   expectedShapes?: Record<string, string>;
+  requireCleanLayout?: boolean;
   style?: CanvasStyle;
 };
 
@@ -41,6 +42,9 @@ export type RequestCanvas = <A extends CanvasAction>(
   context: CanvasRequestContext,
   signal?: AbortSignal,
 ) => Promise<CanvasActionResult<A>>;
+
+/** Browser rejection is definitive; transport timeouts may have an unknown commit outcome. */
+export class CanvasRequestRejectedError extends Error {}
 
 /** Owns pending canvas requests, deadlines, and remote cancellation for one browser connection. */
 export class CanvasConnection {
@@ -117,7 +121,7 @@ export class CanvasConnection {
     request.cleanup();
 
     if (response.ok) request.resolve(response.result);
-    else request.reject(new Error(response.error));
+    else request.reject(new CanvasRequestRejectedError(response.error));
   }
 
   /** Disconnect cleanup releases every pending timer and cancellation listener. */

@@ -1,21 +1,26 @@
 :root {
   color-scheme: light;
-  --piet-text: #172033;
-  --piet-muted: #697386;
-  --piet-subtle: #9aa3b2;
-  --piet-border: #e4e8ef;
-  --piet-border-strong: #cfd6e1;
-  --piet-panel-background: rgba(250, 251, 253, 0.96);
-  --piet-window-background: rgba(255, 255, 255, 0.94);
-  --piet-control-background: #ffffff;
-  --piet-control-hover: #f3f6fa;
-  --piet-primary: #315fca;
-  --piet-primary-hover: #264ea9;
-  --piet-queued: #7c5ac2;
-  --piet-running: #b76a00;
-  --piet-done: #218653;
-  --piet-error: #c13a42;
-  --piet-window-shadow: 0 12px 32px rgba(24, 38, 64, 0.16);
+  --piet-yellow: #f4c11b;
+  --piet-red: #ff3b30;
+  --piet-blue: #2e8cff;
+  --piet-black: #000000;
+  --piet-ground: #f2eee4;
+  --piet-text: var(--piet-black);
+  --piet-muted: #56534d;
+  --piet-subtle: #69655e;
+  --piet-border: var(--piet-black);
+  --piet-border-strong: var(--piet-black);
+  --piet-panel-background: var(--piet-ground);
+  --piet-window-background: var(--piet-ground);
+  --piet-control-background: var(--piet-ground);
+  --piet-control-hover: var(--piet-yellow);
+  --piet-primary: var(--piet-blue);
+  --piet-primary-hover: var(--piet-yellow);
+  --piet-queued: var(--piet-ground);
+  --piet-running: var(--piet-yellow);
+  --piet-done: var(--piet-blue);
+  --piet-error: var(--piet-red);
+  --piet-window-shadow: 4px 4px 0 var(--piet-black);
   --piet-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --piet-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -23,22 +28,14 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --piet-text: #edf2fb;
-    --piet-muted: #a7b0c1;
-    --piet-subtle: #7b879b;
-    --piet-border: #2e3748;
-    --piet-border-strong: #47536a;
-    --piet-panel-background: rgba(25, 30, 41, 0.96);
-    --piet-window-background: rgba(28, 34, 47, 0.95);
-    --piet-control-background: #202838;
-    --piet-control-hover: #2a3448;
-    --piet-primary: #7198ee;
-    --piet-primary-hover: #8eaff5;
-    --piet-queued: #b79ae9;
-    --piet-running: #f0aa50;
-    --piet-done: #63c991;
-    --piet-error: #f07b82;
-    --piet-window-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+    --piet-text: var(--piet-ground);
+    --piet-muted: #c4bfb4;
+    --piet-subtle: #b0aba0;
+    --piet-panel-background: #24231f;
+    --piet-window-background: #24231f;
+    --piet-control-background: #24231f;
+    --piet-control-hover: #39362e;
+    --piet-primary-hover: var(--piet-yellow);
   }
 }
 
@@ -79,54 +76,22 @@ button {
   z-index: 1100;
   right: 50%;
   bottom: 78px;
-  width: min(560px, calc(100% - 32px));
+  width: min(320px, calc(100% - 32px));
   transform: translateX(50%);
   box-sizing: border-box;
-  padding: 8px 10px 7px;
-  border: 1px solid var(--piet-border-strong);
-  border-radius: 14px;
-  background: var(--piet-window-background);
-  box-shadow: var(--piet-window-shadow);
-  pointer-events: auto;
-  backdrop-filter: blur(12px);
-}
-
-.piet-composer__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.piet-composer__input {
-  min-width: 0;
-  flex: 1;
-  resize: none;
-  box-sizing: border-box;
-  min-height: 32px;
-  max-height: 104px;
-  padding: 7px 9px;
-  border: 1px solid var(--piet-border);
-  border-radius: 8px;
-  outline: 0;
-  background: var(--piet-control-background);
-  color: var(--piet-text);
-  line-height: 1.3;
-}
-
-.piet-composer__input:focus {
-  border-color: var(--piet-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--piet-primary) 22%, transparent);
-}
-
-.piet-composer__submit {
-  align-self: stretch;
-  min-width: 54px;
+  text-align: center;
+  pointer-events: none;
 }
 
 .piet-composer__hint {
-  padding: 4px 2px 0;
+  width: fit-content;
+  margin: 8px auto 0;
+  padding: 4px 6px;
+  background: var(--piet-window-background);
   color: var(--piet-muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: auto;
 }
 
 .piet-button,
@@ -148,9 +113,10 @@ button {
 }
 
 .piet-button--primary {
-  border-color: var(--piet-primary);
+  border-color: var(--piet-black);
   background: var(--piet-primary);
-  color: #fff;
+  color: var(--piet-black);
+  font-weight: 700;
 }
 
 .piet-button--primary:hover:not(:disabled) {
@@ -300,7 +266,7 @@ button {
   flex-direction: column;
   border-left: 1px solid var(--piet-border-strong);
   background: var(--piet-panel-background);
-  box-shadow: -12px 0 32px rgba(24, 38, 64, 0.14);
+  box-shadow: -3px 0 0 var(--piet-black);
   pointer-events: auto;
 }
 
@@ -361,8 +327,9 @@ button {
 }
 
 .piet-tab--active {
-  border-color: var(--piet-primary);
-  color: var(--piet-primary);
+  border-color: var(--piet-black);
+  background: var(--piet-yellow);
+  color: var(--piet-black);
 }
 
 .piet-inspector__body {
@@ -437,25 +404,28 @@ button {
 
 .piet-status {
   flex: none;
+  padding: 2px 4px;
+  border: 1px solid var(--piet-black);
+  color: var(--piet-black);
   font-family: var(--piet-mono);
   font-size: 9px;
   text-transform: uppercase;
 }
 
 .piet-status--queued {
-  color: var(--piet-queued);
+  background: var(--piet-queued);
 }
 
 .piet-status--running {
-  color: var(--piet-running);
+  background: var(--piet-running);
 }
 
 .piet-status--done {
-  color: var(--piet-done);
+  background: var(--piet-done);
 }
 
 .piet-status--error {
-  color: var(--piet-error);
+  background: var(--piet-error);
 }
 
 .piet-status--cancelled {
@@ -510,7 +480,7 @@ button {
 }
 
 .piet-message--user {
-  border-color: color-mix(in srgb, var(--piet-primary) 30%, var(--piet-border));
+  border-left: 5px solid var(--piet-blue);
 }
 
 .piet-message__role {
@@ -522,19 +492,27 @@ button {
 }
 
 .piet-voice {
-  margin-top: 6px;
+  margin: 0;
 }
 
 .piet-voice__controls {
+  position: relative;
   display: flex;
-  gap: 6px;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
 }
 
 .piet-voice__controls .piet-button {
   min-height: 44px;
-  padding: 6px 12px;
-  border-radius: 8px;
   font-size: 12px;
+}
+
+.piet-voice__controls .piet-button:not(.piet-voice__record) {
+  position: absolute;
+  left: calc(50% + 56px);
+  padding: 6px 10px;
 }
 
 .piet-voice__record {
@@ -550,6 +528,10 @@ button {
 .piet-voice__transcript {
   max-height: 80px;
   margin: 6px 0;
+  padding: 8px;
+  border: 2px solid var(--piet-black);
+  background: var(--piet-window-background);
+  pointer-events: auto;
   overflow: auto;
   overflow-wrap: anywhere;
   font-size: 12px;
@@ -558,7 +540,7 @@ button {
 @media (max-width: 600px) {
   .piet-composer {
     bottom: 68px;
-    width: calc(100% - 20px);
+    width: min(320px, calc(100% - 20px));
   }
 
   .piet-inspector-toggle {

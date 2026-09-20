@@ -103,11 +103,16 @@ test("hold streams audio; release drains final audio and submits once with recor
   page,
 }) => {
   const h = await openVoiceBrowser(page);
-  const input = page.getByRole("textbox", { name: "Ask pi about this canvas" });
-  await input.fill("Capture initial context");
-  await input.press("Enter");
+  await expect(page.getByRole("textbox", { name: "Ask pi about this canvas" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "send", exact: true })).toHaveCount(0);
+  await h.hold();
+  await page.mouse.up();
+  await expect.poll(() => h.controls).toContain("finish");
+  h.send({ type: "finished", text: "Capture initial context" });
   await expect.poll(() => h.prompts().length).toBe(1);
   const initial = h.prompts()[0];
+  await expect.poll(h.closed).toBe(1);
+  h.controls.length = 0;
 
   if (!initial) throw new Error("Missing initial canvas context");
   await h.hold();
@@ -145,8 +150,8 @@ test("hold streams audio; release drains final audio and submits once with recor
   expect(submitted?.text).toBe("Fill these columns.");
   expect(submitted?.canvasContext.viewport).toEqual(initial.canvasContext.viewport);
   expect(submitted?.canvasContext.capturedAt <= startCaptureBefore).toBe(true);
-  await expect.poll(h.closed).toBe(1);
-  expect(h.recordings()).toBe(1);
+  await expect.poll(h.closed).toBe(2);
+  expect(h.recordings()).toBe(2);
   expect(h.controls.filter((command) => command === "finish")).toHaveLength(1);
 });
 

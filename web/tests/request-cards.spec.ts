@@ -7,6 +7,13 @@ import {
   type ServerMessage,
 } from "@piet/protocol";
 
+import { submitTestVoiceRequest } from "./voice-test-driver.ts";
+
+test.use({
+  permissions: ["microphone"],
+  launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
+});
+
 const actor = { id: "main:test", name: "Piet", color: "#2563eb" };
 
 class TaskBrowser {
@@ -16,7 +23,7 @@ class TaskBrowser {
   constructor(readonly page: Page) {}
 
   async open(): Promise<void> {
-    await this.page.routeWebSocket(/localhost:8787/, (socket) => {
+    await this.page.routeWebSocket(/localhost:8787\/?$/, (socket) => {
       this.socket = socket;
       socket.onMessage((raw) => {
         const parsed = parseClientMessage(raw.toString());
@@ -29,10 +36,7 @@ class TaskBrowser {
       socket.send(JSON.stringify({ type: "ready", actor } satisfies ServerMessage));
     });
     await this.page.goto("/");
-    const input = this.page.getByRole("textbox", { name: "Ask pi about this canvas" });
-    await expect(input).toBeEnabled();
-    await input.fill("Track this task");
-    await input.press("Enter");
+    await submitTestVoiceRequest(this.page, "Track this task");
     await expect.poll(() => this.context?.page.id).toBeTruthy();
   }
 
@@ -41,6 +45,35 @@ class TaskBrowser {
     this.socket.send(JSON.stringify(message));
   }
 }
+
+test("failed drawing stays visible until dismissed instead of disappearing", async ({ page }) => {
+  const browser = new TaskBrowser(page);
+  await browser.open();
+
+  if (!browser.context) throw new Error("Missing canvas context");
+  browser.send({
+    type: "run_update",
+    run: {
+      runId: "failed-icons",
+      promptId: "failed-icons",
+      title: "Draw gopher",
+      kind: "canvas",
+      pageId: browser.context.page.id,
+      anchor: { x: 0, y: 0 },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      sequence: 1,
+      status: "error",
+      error: "Canvas repair limit reached",
+    },
+  });
+  const card = page.getByRole("article", { name: "Draw gopher", exact: true });
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("status")).toHaveText("Canvas repair limit reached");
+  await expect(card.getByRole("button", { name: "Retry Draw gopher" })).toBeEnabled();
+  await card.getByRole("button", { name: "Dismiss Draw gopher" }).click();
+  await expect(card).toHaveCount(0);
+});
 
 test("ongoing request card stays screen-fixed during real canvas pan and wheel zoom", async ({
   page,
@@ -82,9 +115,7 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
   await page.mouse.up({ button: "middle" });
 
   const initialViewport = browser.context.viewport;
-  const input = page.getByRole("textbox", { name: "Ask pi about this canvas" });
-  await input.fill("Capture after pan");
-  await input.press("Enter");
+  await submitTestVoiceRequest(page, "Capture after pan");
   await expect.poll(() => browser.context?.viewport.x).not.toBe(initialViewport.x);
   expect(await card.boundingBox()).toEqual(beforePan);
   const beforeZoom = await card.boundingBox();

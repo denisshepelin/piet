@@ -2,11 +2,6 @@ import type { Editor } from "tldraw";
 import { capturePromptCanvasContext } from "./canvasFormat.ts";
 import type { PromptCanvasContext } from "@piet/protocol";
 
-type CanvasIntentChat = {
-  ready: boolean;
-  send: (text: string, canvasContext: PromptCanvasContext) => void;
-};
-
 type CanvasPoint = { x: number; y: number };
 
 const isCanvasPoint = (point: CanvasPoint | null | undefined): point is CanvasPoint =>
@@ -28,22 +23,6 @@ const getIntentAnchor = (editor: Editor): CanvasPoint => {
   return { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
 };
 
-/** Freezes canvas intent context at text submission or the start of a voice recording. */
+/** Freezes canvas intent context at the start of a voice recording. */
 export const captureCanvasIntentContext = (editor: Editor): PromptCanvasContext =>
   capturePromptCanvasContext(editor, getIntentAnchor(editor));
-
-/** Captures selection, pointer, and viewport context once when a text intent is submitted. */
-export const submitCanvasIntent = (
-  editor: Editor,
-  chat: CanvasIntentChat,
-  text: string,
-): boolean => {
-  const trimmed = text.trim();
-
-  if (!chat.ready || trimmed.length === 0) return false;
-
-  const canvasContext = captureCanvasIntentContext(editor);
-  chat.send(trimmed, canvasContext);
-
-  return true;
-};
