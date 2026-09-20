@@ -1,22 +1,22 @@
 # Push-to-talk voice input
 
-Piet uses Soniox streaming speech-to-text for dictation. Voice does not replace the main agent: the completed transcript enters the same prompt path as typed text, including research workers, request cards, and guarded canvas commits. There is no spoken assistant output.
+Piet uses Soniox streaming speech-to-text for dictation. Voice is the only agent input: the completed transcript enters the main agent prompt path, including research workers, request cards, and guarded canvas commits. There is no typed prompt composer; the drawing canvas remains available. There is no spoken assistant output.
 
 ## Setup
 
-Set `SONIOX_API_KEY` in the backend environment, then run:
+Set `SONIOX_API_KEY` in the repository-root `.env` file (ignored by Git), or in the backend environment, then run:
 
 ```sh
 pnpm dev
 ```
 
-The key stays on the backend. Do not use a `VITE_` variable for it. Without a key, typed input continues to work and recording shows a configuration error.
+The backend `dev` and `start` scripts load the root `.env`; existing environment variables take precedence. Restart the backend after changing the key. The key stays on the backend. Do not use a `VITE_` variable for it. Without a key, recording shows a configuration error; drawing remains available.
 
 Use HTTPS or localhost and allow microphone access. The initial implementation uses `MediaRecorder` with WebM/Opus or Ogg/Opus, supported in Chrome and Firefox. Browsers that only record MP4/AAC show an unsupported-format message instead of submitting broken audio. `VITE_WS_URL` still selects the Piet backend; transcription uses `/transcription` on that same origin.
 
 ## Interaction
 
-- Hold **hold to talk** with mouse or touch; release to submit.
+- Hold the square Mondrian microphone button with mouse or touch; release to submit. The ivory tile turns red while recording and yellow while connecting or transcribing.
 - With the button focused, hold **Space** or **Enter** and release to submit.
 - **Escape** or **cancel voice** discards the recording, including while final transcription is pending.
 - Losing window focus, hiding the tab, pointer cancellation, or losing the agent connection cancels recording.
@@ -25,7 +25,7 @@ Use HTTPS or localhost and allow microphone access. The initial implementation u
 - Empty speech, provider errors, and timeouts do not send a prompt or fall back to provisional text.
 - Releasing while microphone permission is still pending discards that attempt. If permission is subsequently granted, its late stream is stopped. Hold again to record.
 
-Selection, page, viewport, anchor, and styles are frozen when the hold begins, not when transcription finishes. Later canvas changes still face the existing page and conflict checks. Spoken text and existing typed draft text are independent; dictation does not overwrite or append to a draft.
+Selection, page, viewport, anchor, and styles are frozen when the hold begins, not when transcription finishes. Later canvas changes still face the existing page and conflict checks. The live transcript is read-only; there is no typed draft or text-send fallback.
 
 ## Architecture decision
 

@@ -13,24 +13,23 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CanvasConnection } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
-import { MAIN_SYSTEM_PROMPT, CANVAS_WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
+import { MAIN_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createSessionTrace } from "./sessionTrace.js";
 import { parseClientMessage, type CanvasJsonObject, type ServerMessage } from "@piet/protocol";
 
 const PORT = Number(process.env.PORT ?? 8787);
 
-const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "opencode-go";
+const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "openai-codex";
 
-const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "minimax-m3";
+const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "gpt-6-astra";
 
-const DEFAULT_RESEARCH_MODEL_PROVIDER =
-  process.env.RESEARCH_MODEL_PROVIDER ?? DEFAULT_MAIN_MODEL_PROVIDER;
+const DEFAULT_MAIN_THINKING_LEVEL = "low";
 
-const DEFAULT_RESEARCH_MODEL_ID = process.env.RESEARCH_MODEL_ID ?? DEFAULT_MAIN_MODEL_ID;
+const DEFAULT_RESEARCH_MODEL_PROVIDER = process.env.RESEARCH_MODEL_PROVIDER ?? "openai-codex";
 
-const RESEARCH_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. You receive one bounded task from the main canvas agent.
+const DEFAULT_RESEARCH_MODEL_ID = process.env.RESEARCH_MODEL_ID ?? "gpt-5.6-luna";
 
-Inspect the repository, run read-only commands, and report concise findings. Do not edit files or run commands that modify the repository. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, evidence with file paths, verification, blockers, and canvas-ready content.`;
+const DEFAULT_RESEARCH_THINKING_LEVEL = "medium";
 
 const logDirectory = process.env.PIET_LOG_DIR ?? "logs";
 
@@ -83,26 +82,15 @@ const researchResourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: getAgentDir(),
   settingsManager,
-  appendSystemPromptOverride: (base) => [...base, RESEARCH_SYSTEM_APPENDIX],
-});
-
-const canvasResourceLoader = new DefaultResourceLoader({
-  cwd: process.cwd(),
-  agentDir: getAgentDir(),
-  settingsManager,
   noExtensions: true,
   noSkills: true,
   noPromptTemplates: true,
   noContextFiles: true,
-  systemPromptOverride: () => CANVAS_WORKER_SYSTEM_PROMPT,
+  systemPromptOverride: () => RESEARCH_SYSTEM_PROMPT,
   appendSystemPrompt: [],
 });
 
-await Promise.all([
-  mainResourceLoader.reload(),
-  researchResourceLoader.reload(),
-  canvasResourceLoader.reload(),
-]);
+await Promise.all([mainResourceLoader.reload(), researchResourceLoader.reload()]);
 
 const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
 
@@ -176,13 +164,14 @@ wss.on("connection", async (socket, request) => {
     settingsManager,
     mainResourceLoader,
     researchResourceLoader,
-    canvasResourceLoader,
     requestCanvas: canvasConnection.request.bind(canvasConnection),
     defaultMainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
+    defaultMainThinkingLevel: DEFAULT_MAIN_THINKING_LEVEL,
     defaultResearchModel: {
       provider: DEFAULT_RESEARCH_MODEL_PROVIDER,
       id: DEFAULT_RESEARCH_MODEL_ID,
     },
+    defaultResearchThinkingLevel: DEFAULT_RESEARCH_THINKING_LEVEL,
     connId,
     logEvent,
     send: sendToClient,

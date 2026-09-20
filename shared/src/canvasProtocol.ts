@@ -78,7 +78,16 @@ const elementFields = {
   endShapeId: Type.Optional(id),
 };
 
-const putElement = Type.Object({ id: Type.Optional(id), ...elementFields });
+const putElement = Type.Object({
+  id: Type.Optional(id),
+  ...elementFields,
+  placement: Type.Optional(
+    Type.Object({
+      below: Type.Array(id, { minItems: 1, maxItems: 200 }),
+      gap: Type.Optional(Type.Number({ minimum: 0, maximum: 1000 })),
+    }),
+  ),
+});
 
 const updateElement = Type.Object({ ...elementFields, id });
 
@@ -261,6 +270,7 @@ const requestFields = {
   contextId: id,
   deadlineAt: number,
   captureTrace: Type.Optional(Type.Boolean()),
+  requireCleanLayout: Type.Optional(Type.Boolean()),
   expectedShapes: Type.Optional(Type.Record(id, text)),
   style: Type.Optional(style),
 };

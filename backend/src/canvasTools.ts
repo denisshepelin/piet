@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { CanvasRequestContext, RequestCanvas } from "./canvasConnection.js";
 import {
+  canvasActionSchemas,
   isCanvasJsonNumber,
   isCanvasJsonString,
   type CanvasAction,
@@ -69,6 +70,7 @@ const elementParams = Type.Object({
     Type.String({ description: "Optional shape id. A shape: prefix is added if missing." }),
   ),
   ...elementFields,
+  placement: canvasActionSchemas.put_shapes.params.properties.shapes.items.properties.placement,
 });
 
 const updateElementParams = Type.Object({
@@ -343,13 +345,17 @@ const canvasMutationReferences = (
       params.shape.parentId,
       params.shape.startShapeId,
       params.shape.endShapeId,
+      ...("placement" in params.shape ? (params.shape.placement?.below ?? []) : []),
     ].filter((id): id is string => id !== undefined);
 
   if ("shapes" in params)
     return params.shapes.flatMap((element) =>
-      [element.parentId, element.startShapeId, element.endShapeId].filter(
-        (id): id is string => id !== undefined,
-      ),
+      [
+        element.parentId,
+        element.startShapeId,
+        element.endShapeId,
+        ...(element.placement?.below ?? []),
+      ].filter((id): id is string => id !== undefined),
     );
 
   return "id" in params && params.id ? [params.id] : [];
@@ -424,9 +430,9 @@ export const createCanvasTools = (
     name: "get_canvas",
     label: "Get Canvas",
     description:
-      "Get tldraw current page context as JSON plus a PNG render of the returned shapes. Scope can be viewport (visible area) or page (whole current canvas/page). JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
+      "Get current tldraw page context as fast structured JSON. Set includeImage true when visual review is needed. Scope can be viewport or page. JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
     promptSnippet:
-      "Get tldraw canvas context from the active viewport or whole page, including a PNG render.",
+      "Read canvas bounds and shapes quickly; optionally request a PNG for visual review.",
     promptGuidelines: [
       "Use get_canvas before answering questions about the drawing or before adding shapes that depend on current canvas context.",
       "Use get_canvas with scope 'viewport' first for visible context; use scope 'page' only when the whole current canvas is needed.",
@@ -436,7 +442,7 @@ export const createCanvasTools = (
       includeImage: Type.Optional(
         Type.Boolean({
           description:
-            "Include a PNG for visual review (default true). False returns fast structured context only.",
+            "Include a PNG for visual review (default false). Omit for fast structured context.",
         }),
       ),
       scope: Type.Optional(
@@ -456,7 +462,7 @@ export const createCanvasTools = (
         {
           scope: normalizeScope(params.scope),
           maxShapes: normalizeMaxElements(params.maxShapes),
-          includeImage: params.includeImage ?? true,
+          includeImage: params.includeImage ?? false,
         },
         signal,
       );
@@ -540,6 +546,33 @@ export const createCanvasTools = (
 
       return {
         content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  const putElementsTool = defineTool({
+    name: "put_shapes",
+    label: "Draw Canvas Batch",
+    description:
+      "Immediately validate and commit a small batch of editable shapes. Each successful call is visible before the next model turn; do not wait to generate the whole drawing. Use 1–3 shapes per visible step (maximum 3). Make only one drawing tool call per response and wait for its result before constructing the next step. Rejected batches leave no changes; correct only that batch using returned errors and measured bounds. Earlier successful batches remain visible. Bind arrows to existing shapes or shapes in this batch. Use placement.below for measured vertical spacing.",
+    parameters: Type.Object({ shapes: Type.Array(elementParams, { minItems: 1, maxItems: 3 }) }),
+    async execute(_toolCallId, params, signal) {
+      const normalized = params.shapes.map(normalizeElement);
+
+      const result = await requestCanvas(
+        "put_shapes",
+        { shapes: normalized.map((element) => element.shape) },
+        signal,
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Committed ${result.createdShapeIds.length} shapes: ${result.createdShapeIds.join(", ")}\nBounds: ${JSON.stringify(result.bounds)}\n${normalized.flatMap((element) => element.tips).join("\n")}`,
+          },
+        ],
         details: result,
       };
     },
@@ -754,7 +787,7 @@ export const createCanvasTools = (
     promptGuidelines: [
       "Use update_shape to fix problems found in get_canvas renders: overflowing labels (increase props.w/props.h or shorten text), wrong colors, misrouted arrows.",
       "Pass only the fields being changed, plus id and type. Props merge into existing props; text replaces the label.",
-      "Use ids returned by get_canvas, get_selection, put_shape, or put_mermaid.",
+      "Use ids returned by get_canvas, get_selection, put_shape, or put_shapes.",
     ],
     parameters: updateElementParams,
     async execute(_toolCallId, params, signal) {
@@ -901,6 +934,7 @@ export const createCanvasTools = (
       getCanvasTool,
       getSelectionTool,
       putElementTool,
+      putElementsTool,
       putMermaidTool,
       putImageTool,
       putDrawTool,

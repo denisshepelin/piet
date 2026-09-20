@@ -17,7 +17,7 @@ import {
   type PromptCanvasContext,
   type ServerMessage,
 } from "@piet/protocol";
-import type { RequestCanvas } from "./canvasConnection.js";
+import { CanvasRequestRejectedError, type RequestCanvas } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
 
 const context: PromptCanvasContext = {
@@ -84,9 +84,10 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
     settingsManager,
     mainResourceLoader: loader,
     researchResourceLoader: loader,
-    canvasResourceLoader: loader,
     defaultMainModel: { provider: model.provider, id: model.id },
+    defaultMainThinkingLevel: "off",
     defaultResearchModel: { provider: model.provider, id: model.id },
+    defaultResearchThinkingLevel: "off",
     connId: "test",
     logEvent: () => undefined,
     send: (message) => {
@@ -281,7 +282,7 @@ test("research synthesis retains the original worksheet request after another us
     assert.match(synthesis, /single binary/);
     assert.match(synthesis, /shape:pros/);
     assert.match(synthesis, /task-window summary alone is not completion/);
-    assert.match(synthesis, /call spawn_canvas with the actual findings/);
+    assert.match(synthesis, /Draw the answer directly with small put_shapes batches/);
     assert.match(synthesis, /at most 3 short bullets per column/);
     assert.doesNotMatch(synthesis, /Unrelated question/);
     harness.completions[4]?.("Preparing the canvas answer");
@@ -290,20 +291,17 @@ test("research synthesis retains the original worksheet request after another us
   }
 });
 
-test("canvas completion retains browser layout warnings instead of claiming a clean layout", async () => {
-  const harness = await createHarness(async (action) => {
-    assert.equal(String(action), "put_shapes");
+test("main agent commits progressive batches before its final answer without a canvas worker", async () => {
+  const committed: string[] = [];
 
-    const result = {
-      createdShapeIds: ["shape:summary"],
-      lints: [
-        {
-          kind: "overlapping-text",
-          shapeId: "shape:summary",
-          message: "text of shape:summary overlaps text of shape:recommendation",
-        },
-      ],
-    };
+  const harness = await createHarness(async (action, params, requestContext) => {
+    assert.equal(String(action), "put_shapes");
+    assert.equal(requestContext.requireCleanLayout, true);
+
+    if (!("shapes" in params)) throw new Error("Expected drawing batch");
+    const ids = params.shapes.map((element) => `shape:${element.id}`);
+    committed.push(...ids);
+    const result = { createdShapeIds: ids };
 
     if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
 
@@ -313,49 +311,152 @@ test("canvas completion retains browser layout warnings instead of claiming a cl
   try {
     await harness.manager.handle({
       type: "prompt",
-      id: "layout",
-      text: "Summarize on canvas",
+      id: "drawing",
+      text: "Draw a tree",
       canvasContext: context,
     });
     await until(() => harness.completions.length === 1);
+    assert.ok(harness.promptTools[0]?.includes("put_shapes"));
+    assert.ok(!harness.promptTools[0]?.includes("put_mermaid"));
+    assert.ok(harness.promptTools[0]?.includes("put_image"));
+    assert.ok(harness.promptTools[0]?.includes("spawn_research"));
+    assert.ok(!harness.promptTools[0]?.includes("spawn_canvas"));
+    assert.ok(!harness.promptTools[0]?.includes("propose_canvas"));
     harness.completions[0]?.("", {
-      name: "spawn_canvas",
-      arguments: { title: "Draw summary", instruction: "Draw a short summary" },
+      name: "put_shapes",
+      arguments: { shapes: [{ id: "root", type: "geo", text: "Root" }] },
+    });
+    await until(() => harness.completions.length === 2);
+    assert.deepEqual(committed, ["shape:root"]);
+    assert.ok(!harness.sent.some((message) => message.type === "prompt_done"));
+    harness.completions[1]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: [{ id: "branch", type: "geo", text: "Branch", x: 300 }] },
     });
     await until(() => harness.completions.length === 3);
-    const workerIndex = harness.promptTools.findIndex((tools) => tools.includes("propose_canvas"));
-    assert.ok(workerIndex > 0);
-    harness.completions[workerIndex === 1 ? 2 : 1]?.("Preparing the summary");
-    harness.completions[workerIndex]?.("", {
-      name: "propose_canvas",
-      arguments: { type: "shapes", shapes: [{ id: "summary", type: "text", text: "Summary" }] },
-    });
-    await until(() => harness.completions.length === 4);
-    harness.completions[3]?.("A clear and readable layout is ready");
-    await until(() =>
-      harness.sent.some(
-        (message) =>
-          message.type === "run_update" &&
-          message.run.kind === "canvas" &&
-          message.run.status === "done",
+    assert.deepEqual(committed, ["shape:root", "shape:branch"]);
+    harness.completions[2]?.("Drew the tree.");
+    await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+    assert.ok(
+      !harness.sent.some(
+        (message) => message.type === "run_update" && message.run.kind === "canvas",
       ),
     );
-
-    const completion = harness.sent.findLast(
-      (message) =>
-        message.type === "run_update" &&
-        message.run.kind === "canvas" &&
-        message.run.status === "done",
-    );
-
-    assert.ok(completion?.type === "run_update" && completion.run.status === "done");
-    assert.match(completion.run.result, /Drawing committed with layout warnings/);
-    assert.match(completion.run.result, /overlaps text of shape:recommendation/);
-    assert.doesNotMatch(completion.run.result, /clear and readable/);
   } finally {
     harness.manager.dispose();
   }
 });
+
+test("oversized drawing batches are rejected before the browser and can be split into small steps", async () => {
+  let writes = 0;
+
+  const harness = await createHarness(async (action, params) => {
+    writes++;
+
+    if (!("shapes" in params)) throw new Error("Expected drawing batch");
+    assert.ok(params.shapes.length <= 3);
+    const result = { createdShapeIds: params.shapes.map((element) => `shape:${element.id}`) };
+
+    if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
+    return result;
+  });
+
+  try {
+    await harness.manager.handle({
+      type: "prompt",
+      id: "stepwise",
+      text: "Draw a tree step by step",
+      canvasContext: context,
+    });
+    await until(() => harness.completions.length === 1);
+
+    const elements = Array.from({ length: 4 }, (_value, index) => ({
+      id: `node-${index}`,
+      type: "geo",
+      text: `Node ${index}`,
+    }));
+
+    harness.completions[0]?.("", { name: "put_shapes", arguments: { shapes: elements } });
+    await until(() => harness.completions.length === 2);
+    assert.equal(writes, 0);
+    harness.completions[1]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: elements.slice(0, 3) },
+    });
+    await until(() => harness.completions.length === 3);
+    assert.equal(writes, 1);
+    assert.ok(!harness.sent.some((message) => message.type === "prompt_done"));
+    harness.completions[2]?.("", { name: "put_shapes", arguments: { shapes: elements.slice(3) } });
+    await until(() => harness.completions.length === 4);
+    assert.equal(writes, 2);
+    harness.completions[3]?.("Drew the tree.");
+    await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+  } finally {
+    harness.manager.dispose();
+  }
+});
+
+for (const outcome of ["repair", "exhaust", "transport", "unrelated"] as const) {
+  test(`main drawing feedback: ${outcome}`, async () => {
+    let attempts = 0;
+
+    const harness = await createHarness(async (action) => {
+      attempts++;
+
+      if (outcome === "transport") throw new Error("Canvas request timed out");
+
+      if (outcome === "exhaust" || attempts === 1)
+        throw new CanvasRequestRejectedError("Canvas layout rejected; measured bottom is 320");
+      const result = { createdShapeIds: ["shape:corrected"] };
+
+      if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
+      return result;
+    });
+
+    try {
+      await harness.manager.handle({
+        type: "prompt",
+        id: "repair",
+        text: "Draw",
+        canvasContext: context,
+      });
+      await until(() => harness.completions.length === 1);
+      const calls = outcome === "repair" || outcome === "unrelated" ? 2 : 4;
+
+      for (let index = 0; index < calls; index++) {
+        harness.completions[index]?.("", {
+          name: "put_shapes",
+          arguments: {
+            shapes: [
+              {
+                id: outcome === "unrelated" && index === 1 ? "different" : "corrected",
+                type: "text",
+                text: "Corrected",
+              },
+            ],
+          },
+        });
+        // Each next model turn depends on the previous tool result.
+        // eslint-disable-next-line no-await-in-loop
+        await until(() => harness.completions.length === index + 2);
+      }
+
+      harness.completions[calls]?.("Finished");
+      await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+      assert.equal(
+        attempts,
+        outcome === "repair" || outcome === "unrelated" ? 2 : outcome === "exhaust" ? 3 : 1,
+      );
+      const completion = harness.sent.findLast((message) => message.type === "run_update");
+      assert.ok(completion?.type === "run_update");
+      assert.equal(completion.run.status, outcome === "repair" ? "done" : "error");
+    } finally {
+      harness.manager.dispose();
+    }
+  });
+}
 
 test("cancelling queued and active responses releases the session for another user request", async () => {
   const harness = await createHarness();

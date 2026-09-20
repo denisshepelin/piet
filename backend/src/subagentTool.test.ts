@@ -731,7 +731,7 @@ test("waits for finalizeResult before completing a canvas task and propagates ca
       finalizeSignal = signal;
       assert.equal(result.proposal?.type, "shapes");
 
-      return finalization.promise;
+      return { status: "done", text: await finalization.promise };
     },
   });
 
@@ -786,6 +786,60 @@ test("turns a rejected finalization into an error result", async () => {
   assert.equal(sink.results[0]?.error, "canvas commit rejected");
   runtime.dispose();
 });
+
+for (const outcome of ["repair", "exhaust", "cancel"] as const) {
+  test(`canvas correction lifecycle: ${outcome}`, async () => {
+    const sink = collect();
+    const session = new FakeSession();
+    const instructions: string[] = [];
+    let attempts = 0;
+
+    const runtime = createSubagentTool({
+      ...contextOptions(sink),
+      createSession: async (_kind, proposalTool) => {
+        assert.ok(proposalTool);
+
+        return {
+          subscribe: session.subscribe.bind(session),
+          abort: session.abort.bind(session),
+          dispose: session.dispose.bind(session),
+          prompt: async (text) => {
+            instructions.push(text);
+            await executeProposal(proposalTool);
+            session.finish("Prepared drawing");
+          },
+        };
+      },
+      finalizeResult: async (result) => {
+        attempts++;
+        assert.ok(result.proposal);
+
+        if (outcome === "cancel") runtime.cancel(result.runId);
+
+        return outcome === "repair" && attempts === 2
+          ? { status: "done", text: "Verified and committed" }
+          : { status: "retry", feedback: "Canvas layout rejected; measured bottom is 320" };
+      },
+    });
+
+    await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
+      title: "Repair drawing",
+      instruction: "Draw",
+    });
+    const expected = outcome === "repair" ? "done" : outcome === "exhaust" ? "error" : "cancelled";
+    await waitFor(() => sink.updates().at(-1)?.status === expected);
+    assert.equal(attempts, outcome === "repair" ? 2 : outcome === "exhaust" ? 3 : 1);
+    assert.equal(new Set(sink.updates().map((run) => run.runId)).size, 1);
+
+    if (outcome !== "cancel") assert.match(instructions[1] ?? "", /measured bottom is 320/);
+    assert.equal(sink.results.length, outcome === "cancel" ? 0 : 1);
+    assert.equal(
+      sink.updates().filter((run) => run.status === "done").length,
+      outcome === "repair" ? 1 : 0,
+    );
+    runtime.dispose();
+  });
+}
 
 test("keeps active work bounded at four running and eight active tasks", async () => {
   const sink = collect();

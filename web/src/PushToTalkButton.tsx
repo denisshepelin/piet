@@ -102,6 +102,8 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
           aria-label="Hold to record voice request"
           aria-pressed={state.phase === "recording"}
           aria-describedby="piet-voice-status"
+          data-phase={state.phase}
+          title="Hold to talk · release to send"
           disabled={!chat.ready || state.phase === "finishing"}
           onContextMenu={(event) => event.preventDefault()}
           onPointerDown={(event) => {
@@ -131,11 +133,23 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
             if (held.current === " " || held.current === "Enter") cancel();
           }}
         >
-          {state.phase === "recording"
-            ? "release to send"
-            : state.phase === "finishing"
-              ? "transcribing…"
-              : "hold to talk"}
+          <svg
+            className="piet-voice__mondrian"
+            viewBox="0 0 80 80"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path className="piet-voice__tile--yellow" d="M0 0h48v32H0z" />
+            <path className="piet-voice__tile--ground" d="M48 0h32v32H48z" />
+            <path className="piet-voice__tile--blue" d="M0 32h48v24H0z" />
+            <path className="piet-voice__tile--black" d="M48 32h32v24H48z" />
+            <path className="piet-voice__tile--red" d="M0 56h80v24H0z" />
+            <path className="piet-voice__grid" d="M0 32h80M0 56h80M48 0v56" />
+            <g className="piet-voice__microphone">
+              <rect x="19" y="7" width="10" height="14" rx="5" />
+              <path d="M15 17v2a9 9 0 0 0 18 0v-2M24 28v4" />
+            </g>
+          </svg>
         </button>
         {active && (
           <button className="piet-button" type="button" onClick={cancel}>
@@ -148,15 +162,17 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
         className="piet-composer__hint"
         role={state.phase === "error" ? "alert" : "status"}
       >
-        {state.phase === "error"
-          ? state.message
-          : state.phase === "connecting"
-            ? "Allow microphone access, then keep holding to record."
-            : state.phase === "recording"
-              ? "Recording · release to send · Escape to cancel"
-              : state.phase === "finishing"
-                ? "Finishing transcription · Escape to cancel"
-                : "Hold with mouse, touch, or Space/Enter when focused."}
+        {!chat.ready
+          ? "Disconnected — reload to reconnect."
+          : state.phase === "error"
+            ? state.message
+            : state.phase === "connecting"
+              ? "Allow microphone access, then keep holding to record."
+              : state.phase === "recording"
+                ? "Recording · release to send · Escape to cancel"
+                : state.phase === "finishing"
+                  ? "Finishing transcription · Escape to cancel"
+                  : "Hold to talk · release to send. Space/Enter when focused."}
       </div>
       {active && "text" in state && state.text && (
         <p className="piet-voice__transcript" aria-label="Voice transcript">

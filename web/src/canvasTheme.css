@@ -1,0 +1,164 @@
+/* Keep canvas chrome geometric without changing existing document colors or shapes. */
+.piet-app .tl-container {
+  --tl-radius-0: 0px;
+  --tl-radius-1: 0px;
+  --tl-radius-2: 0px;
+  --tl-radius-3: 0px;
+  --tl-radius-4: 0px;
+  --tl-color-selected: var(--piet-blue);
+  --tl-color-selected-contrast: var(--piet-black);
+  --tl-color-focus: var(--piet-blue);
+  --tl-color-selection-stroke: var(--piet-blue);
+  --tl-color-divider: var(--piet-black);
+  --tl-color-low-border: var(--piet-black);
+  --tl-shadow-1: 2px 2px 0 var(--piet-black);
+  --tl-shadow-2: 3px 3px 0 var(--piet-black);
+  --tl-shadow-3: 4px 4px 0 var(--piet-black);
+}
+
+.piet-app .tl-theme__light {
+  --piet-text: var(--piet-black);
+  --piet-muted: #56534d;
+  --piet-subtle: #69655e;
+  --piet-panel-background: var(--piet-ground);
+  --piet-window-background: var(--piet-ground);
+  --piet-control-background: var(--piet-ground);
+  --piet-control-hover: var(--piet-yellow);
+  --tl-color-background: var(--piet-ground);
+  --tl-color-panel: var(--piet-ground);
+  --tl-color-panel-contrast: var(--piet-ground);
+  --tl-color-panel-overlay: var(--piet-ground);
+  --tl-color-text: var(--piet-black);
+  --tl-color-text-0: var(--piet-black);
+  --tl-color-text-1: var(--piet-black);
+  --tl-color-text-3: var(--piet-muted);
+  --tl-color-low: #e5dfd1;
+}
+
+.piet-app .tl-theme__dark {
+  --piet-text: var(--piet-ground);
+  --piet-muted: #c4bfb4;
+  --piet-subtle: #b0aba0;
+  --piet-panel-background: #24231f;
+  --piet-window-background: #24231f;
+  --piet-control-background: #24231f;
+  --piet-control-hover: #39362e;
+  --tl-color-background: #191815;
+  --tl-color-panel: #24231f;
+  --tl-color-panel-contrast: #24231f;
+  --tl-color-panel-overlay: #24231f;
+  --tl-color-text: var(--piet-ground);
+  --tl-color-text-0: var(--piet-ground);
+  --tl-color-text-1: var(--piet-ground);
+  --tl-color-text-3: var(--piet-muted);
+  --tl-color-low: #39362e;
+}
+
+.piet-app :is(.tlui-menu, .tlui-toolbar, .tlui-style-panel) {
+  border: 2px solid var(--piet-black);
+}
+
+.piet-app
+  :is(
+    .piet-button,
+    .piet-window-button,
+    .piet-icon-button,
+    .piet-tab,
+    .piet-inspector-toggle,
+    .piet-request-card,
+    .piet-inspector-task,
+    .piet-message,
+    .piet-role-controls select
+  ) {
+  border-radius: 0;
+  border-width: 2px;
+}
+
+.piet-request-card {
+  border-left: 6px solid var(--piet-blue);
+}
+
+.piet-app :is(.piet-status-dot, .piet-request-card__dot) {
+  border: 1px solid var(--piet-black);
+  border-radius: 0;
+}
+
+.piet-inspector__header {
+  border-top: 8px solid var(--piet-yellow);
+  border-bottom-width: 3px;
+}
+
+.piet-inspector-toggle {
+  border-left: 6px solid var(--piet-yellow);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.piet-app :is(button, select, summary):focus-visible {
+  outline: 3px solid var(--piet-blue);
+  outline-offset: 3px;
+}
+
+.piet-app .piet-button.piet-voice__record {
+  width: 88px;
+  height: 88px;
+  flex: none;
+  padding: 0;
+  overflow: hidden;
+  border: 4px solid var(--piet-black);
+  background: var(--piet-ground);
+  box-shadow: 4px 4px 0 var(--piet-black);
+}
+
+.piet-voice__mondrian {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.piet-voice__tile--yellow {
+  fill: var(--piet-yellow);
+}
+
+.piet-voice__tile--ground {
+  fill: var(--piet-ground);
+}
+
+.piet-voice__tile--blue {
+  fill: var(--piet-blue);
+}
+
+.piet-voice__tile--black {
+  fill: var(--piet-black);
+}
+
+.piet-voice__tile--red {
+  fill: var(--piet-red);
+}
+
+.piet-voice__grid {
+  fill: none;
+  stroke: var(--piet-black);
+  stroke-width: 4px;
+}
+
+.piet-voice__microphone {
+  fill: none;
+  stroke: var(--piet-black);
+  stroke-width: 2px;
+}
+
+.piet-app .piet-voice__record[aria-pressed="true"] {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--piet-black);
+}
+
+.piet-voice__record[aria-pressed="true"] .piet-voice__tile--ground {
+  fill: var(--piet-red);
+}
+
+.piet-voice__record[data-phase="finishing"] .piet-voice__tile--ground,
+.piet-voice__record[data-phase="connecting"] .piet-voice__tile--ground {
+  fill: var(--piet-yellow);
+}

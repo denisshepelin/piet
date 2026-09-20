@@ -48,6 +48,7 @@ import {
   type CanvasStyleProfile,
 } from "./canvasFormat.ts";
 import { detectLints } from "./canvasLints.ts";
+import { resolveCanvasPlacement } from "./canvasPlacement.ts";
 import { canvasSnapshotImageOptions, canvasSnapshotImageBase64 } from "./canvasSnapshotImage.ts";
 import { createCanvasTraceCapture } from "./canvasTraceCapture.ts";
 import {
@@ -506,6 +507,48 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         checkExpectedElements(editor, request);
         const changes = collectCanvasStagedChanges(staging.editor, staging.before);
 
+        if (request.requireCleanLayout) {
+          const currentElements = editor.getCurrentPageShapes();
+
+          const originalElements = staging.editor
+            .getCurrentPageShapes()
+            .filter((element) => staging.before[element.id]);
+
+          if (
+            currentElements.length !== originalElements.length ||
+            currentElements.some(
+              (element) => JSON.stringify(element) !== JSON.stringify(staging.before[element.id]),
+            )
+          ) {
+            throw new Error(
+              "Canvas changed during proposal preparation; no changes committed. Retry against fresh page state.",
+            );
+          }
+
+          const ids = changes.records
+            .filter((record) => record.typeName === "shape")
+            .map((record) => record.id)
+            .filter(isElementId);
+
+          const lints = detectLints(staging.editor, ids).filter(
+            (lint) => lint.kind !== "unbound-arrow",
+          );
+
+          if (lints.length > 0) {
+            const measuredBounds = staging.editor
+              .getCurrentPageShapes()
+              .slice(0, 200)
+              .map((element) => ({
+                id: element.id,
+                bounds: staging.editor.getShapePageBounds(element),
+              }));
+
+            throw new Error(
+              `Canvas layout rejected; no changes committed. ${JSON.stringify({ lints, measuredBounds })}`,
+            );
+          }
+        }
+
         for (const record of changes.records) {
           const before = staging.before[record.id];
           const current = editor.store.get(record.id);
@@ -570,15 +613,25 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       while (remaining.length > 0) {
         const ready = remaining.filter(
           (element) =>
-            !element.parentId ||
-            element.parentId === editor.getCurrentPageId() ||
-            editor.getShape(normalizeElementId(element.parentId)),
+            (!element.parentId ||
+              element.parentId === editor.getCurrentPageId() ||
+              editor.getShape(normalizeElementId(element.parentId))) &&
+            (element.placement?.below.every((id) => editor.getShape(normalizeElementId(id))) ??
+              true),
         );
 
         if (ready.length === 0)
-          throw new Error("canvas batch has missing or cyclic parent references");
+          throw new Error("canvas batch has missing or cyclic parent/placement references");
         editor.createShapes(
-          ready.map((element) => prepareElement(editor, element, viewportCenter, actor, style)),
+          ready.map((element) =>
+            prepareElement(
+              editor,
+              resolveCanvasPlacement(editor, element),
+              viewportCenter,
+              actor,
+              style,
+            ),
+          ),
         );
         const created = new Set(ready.map((element) => element.id));
         remaining = remaining.filter((element) => !created.has(element.id));
