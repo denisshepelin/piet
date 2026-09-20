@@ -10,6 +10,7 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
   const [input, setInput] = useState("");
   const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
   const notice = chat.messages.findLast((message) => message.role === "system");
+
   const activeCount = chat.runs.filter(
     (run) => run.status === "queued" || run.status === "running",
   ).length;
@@ -26,6 +27,7 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     editor.markEventAsHandled(event);
+
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     submitTextIntent();

@@ -7,22 +7,26 @@ import { createSessionTrace } from "./sessionTrace.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+
 const now = () => new Date("2026-07-10T10:00:00Z");
 
 test("session trace preserves full events, extracts exact PNG bytes, deduplicates images, and drains on close", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "piet-session-trace-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
+
   const trace = createSessionTrace({
     directory,
     now,
     mirrorStdout: false,
     manifest: { sessionId: "session:a" },
   });
+
   const data = {
     requestId: "request:a",
     text: "complete ".repeat(2000),
     image: { mimeType: "image/png", data: png },
   };
+
   trace.logEvent({ source: "backend", connId: "session:a", event: "ws.in.canvas_response", data });
   trace.logEvent({ source: "web", connId: "session:a", event: "canvas.trace", data });
   await trace.close();
@@ -58,7 +62,10 @@ test("session trace redacts credential fields and survives unserializable events
     event: "credentials",
     data: { apiKey: "do-not-store", nested: { authorization: "Bearer private" } },
   });
-  const circular: { self?: unknown } = {};
+
+  type CircularTraceValue = { self?: CircularTraceValue };
+
+  const circular: CircularTraceValue = {};
   circular.self = circular;
   trace.logEvent({ source: "backend", connId: "a", event: "circular", data: circular });
   trace.logEvent({ source: "backend", connId: "a", event: "still.working" });
@@ -88,10 +95,12 @@ test("session trace reports oversized event drops without preventing later event
   });
   trace.logEvent({ source: "backend", connId: "a", event: "small" });
   await trace.close();
+
   const events = (await readFile(join(directory, "events.jsonl"), "utf8"))
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
+
   assert.deepEqual(
     events.map((event) => event.event),
     ["small", "log.events_dropped"],

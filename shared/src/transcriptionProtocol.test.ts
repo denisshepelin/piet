@@ -27,5 +27,6 @@ test("transcription rejects unknown events, malformed text, and excessive transc
   ]) {
     assert.equal(parseTranscriptionEvent(JSON.stringify(value)).ok, false);
   }
+
   assert.equal(parseTranscriptionEvent("not json").ok, false);
 });

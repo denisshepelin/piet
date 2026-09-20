@@ -2,14 +2,14 @@ import {
   createTLStore,
   defaultAssetUtils,
   defaultBindingUtils,
-  defaultShapeUtils,
+  defaultShapeUtils as defaultElementUtils,
   Editor,
   getAssetInfo,
   getIndexAbove,
   defaultHandleExternalSvgTextContent,
   type IndexKey,
   type TLParentId,
-  type TLShape,
+  type TLShape as TLElement,
   type TLRecord,
 } from "tldraw";
 
@@ -30,15 +30,18 @@ export type CanvasStagedChanges = {
 /** Creates an isolated editor with the live document, styles, themes, and camera copied. */
 export const createCanvasStagingEditor = (liveEditor: Editor): CanvasStagingSession => {
   const before = liveEditor.store.serialize("document");
+
   const store = createTLStore({
     initialData: before,
-    shapeUtils: defaultShapeUtils,
+    shapeUtils: defaultElementUtils,
     bindingUtils: defaultBindingUtils,
     assetUtils: defaultAssetUtils,
     themes: structuredClone(liveEditor.getThemes()),
   });
+
   const container = document.createElement("div");
   let editor: Editor | undefined;
+
   try {
     // Native text measurement needs a laid-out DOM container, even when no canvas is displayed.
     container.className = liveEditor.getContainer().className;
@@ -56,7 +59,7 @@ export const createCanvasStagingEditor = (liveEditor: Editor): CanvasStagingSess
     document.body.appendChild(container);
     editor = new Editor({
       store,
-      shapeUtils: defaultShapeUtils,
+      shapeUtils: defaultElementUtils,
       bindingUtils: defaultBindingUtils,
       assetUtils: defaultAssetUtils,
       themes: structuredClone(liveEditor.getThemes()),
@@ -78,6 +81,7 @@ export const createCanvasStagingEditor = (liveEditor: Editor): CanvasStagingSess
     );
     editor.setCamera(liveEditor.getCamera());
     registerCanvasStagingContentHandlers(editor);
+
     return { editor, before, container };
   } catch (error) {
     if (editor) editor.dispose();
@@ -91,15 +95,21 @@ export const createCanvasStagingEditor = (liveEditor: Editor): CanvasStagingSess
 const registerCanvasStagingContentHandlers = (editor: Editor): void => {
   editor.registerExternalAssetHandler("file", async ({ file, assetId }) => {
     const asset = await getAssetInfo(editor, file, assetId);
+
     if (!asset || asset.type !== "image") {
       throw new Error(`canvas asset import does not support MIME type '${file.type}'`);
     }
+
     const uploaded = await editor.uploadAsset(asset, file);
-    return {
+
+    const importedAsset = {
       ...asset,
       props: { ...asset.props, src: uploaded.src },
-      ...(uploaded.meta ? { meta: { ...asset.meta, ...uploaded.meta } } : {}),
     };
+
+    return uploaded.meta
+      ? { ...importedAsset, meta: { ...asset.meta, ...uploaded.meta } }
+      : importedAsset;
   });
 
   // The default SVG handler uses the file asset handler above, while keeping sanitization native.
@@ -114,22 +124,26 @@ export const collectCanvasStagedChanges = (
   before: Record<string, TLRecord>,
 ): CanvasStagedChanges => {
   const after = stagingEditor.store.serialize("document");
+
   const records = Object.entries(after)
     .filter(([id, record]) => JSON.stringify(before[id]) !== JSON.stringify(record))
     .map(([, record]) => record);
+
   const removedRecordIds = Object.values(before)
     .filter((record) => after[record.id] === undefined)
     .map((record) => record.id);
-  const beforeShapeIds = new Set(
+
+  const beforeElementIds = new Set(
     Object.values(before)
       .filter((record) => record.typeName === "shape")
       .map((record) => record.id),
   );
-  const createdShapeIds = Object.values(after)
-    .filter((record) => record.typeName === "shape" && !beforeShapeIds.has(record.id))
+
+  const createdElementIds = Object.values(after)
+    .filter((record) => record.typeName === "shape" && !beforeElementIds.has(record.id))
     .map((record) => record.id);
 
-  return { records, removedRecordIds, createdShapeIds };
+  return { records, removedRecordIds, createdShapeIds: createdElementIds };
 };
 
 /** Disposes the isolated editor, private store, and detached container after preparation. */
@@ -150,26 +164,35 @@ export const commitCanvasStagedChanges = (
   if (changes.records.length === 0 && changes.removedRecordIds.length === 0) return;
   // Preparation can overlap user drawing. Append new siblings using current indices, preserving their proposed relative order.
   const highestIndices = new Map<TLParentId, IndexKey>();
-  const appended = new Map<TLShape["id"], TLShape>();
-  const createdShapes = changes.records.filter(
-    (record): record is TLShape => record.typeName === "shape" && !liveEditor.store.has(record.id),
+  const appended = new Map<TLElement["id"], TLElement>();
+
+  const createdElements = changes.records.filter(
+    (record): record is TLElement =>
+      record.typeName === "shape" && !liveEditor.store.has(record.id),
   );
-  createdShapes.sort((a, b) => (a.index < b.index ? -1 : a.index > b.index ? 1 : 0));
-  for (const shape of createdShapes) {
+
+  createdElements.sort((a, b) => (a.index < b.index ? -1 : a.index > b.index ? 1 : 0));
+
+  for (const element of createdElements) {
     const previous =
-      highestIndices.get(shape.parentId) ?? liveEditor.getHighestIndexForParent(shape.parentId);
+      highestIndices.get(element.parentId) ?? liveEditor.getHighestIndexForParent(element.parentId);
+
     const index = getIndexAbove(previous);
-    highestIndices.set(shape.parentId, index);
-    appended.set(shape.id, { ...shape, index });
+    highestIndices.set(element.parentId, index);
+    appended.set(element.id, { ...element, index });
   }
+
   const records = changes.records.map((record) =>
     record.typeName === "shape" ? (appended.get(record.id) ?? record) : record,
   );
+
   const mark = liveEditor.markHistoryStoppingPoint("canvas commit");
+
   try {
     liveEditor.run(
       () => {
         if (changes.removedRecordIds.length > 0) liveEditor.store.remove(changes.removedRecordIds);
+
         if (records.length > 0) liveEditor.store.put(records);
       },
       { history: "record" },

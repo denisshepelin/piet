@@ -19,6 +19,12 @@ import {
 } from "@piet/protocol";
 
 const actor = { id: "main:test", name: "Piet", color: "#2563eb" };
+
+type PendingCanvasResponse = {
+  readonly requestId: string;
+  readonly result: Promise<CanvasResponse>;
+};
+
 class CanvasBrowser {
   socket: WebSocketRoute | undefined;
   messages: ClientMessage[] = [];
@@ -34,10 +40,13 @@ class CanvasBrowser {
       this.socket = socket;
       socket.onMessage((raw) => {
         const parsed = parseClientMessage(raw.toString());
+
         if (!parsed.ok) throw parsed.error;
         this.messages.push(parsed.value);
         this.recordMessage(parsed.value);
+
         if (parsed.value.type === "prompt") this.context = parsed.value.canvasContext;
+
         if (parsed.value.type === "canvas_response")
           this.pending.get(parsed.value.requestId)?.(parsed.value);
       });
@@ -60,7 +69,7 @@ class CanvasBrowser {
     overrides: Partial<
       Pick<CanvasRequest, "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace">
     > = {},
-  ): { requestId: string; result: Promise<CanvasResponse> } {
+  ): PendingCanvasResponse {
     if (!this.context) throw new Error("Browser test has no canvas context");
     const requestId = `request:${++this.nextId}`;
     const result = new Promise<CanvasResponse>((resolve) => this.pending.set(requestId, resolve));
@@ -76,6 +85,7 @@ class CanvasBrowser {
       params,
       ...overrides,
     } as CanvasRequest);
+
     return { requestId, result };
   }
   async request<A extends CanvasAction>(
@@ -87,8 +97,10 @@ class CanvasBrowser {
   ): Promise<CanvasActionResult<A>> {
     const response = await this.begin(action, params, overrides).result;
     expect(response.ok, JSON.stringify(response)).toBe(true);
+
     if (!response.ok || !isCanvasActionResult(action, response.result))
       throw new Error("Unexpected canvas result");
+
     return response.result;
   }
 }
@@ -97,17 +109,21 @@ test("canvas traces freeze commit boundaries without adding images to mutation r
   page,
 }) => {
   const directory = await mkdtemp(join(tmpdir(), "piet-browser-trace-"));
+
   const trace = createSessionTrace({
     directory,
     manifest: { sessionId: "browser-test" },
     now: () => new Date(),
     mirrorStdout: false,
   });
+
   try {
     const browser = new CanvasBrowser(page, (message) =>
       trace.logEvent({ source: "web", connId: "browser-test", event: message.type, data: message }),
     );
+
     await browser.open();
+
     const operation = browser.begin(
       "put_shape",
       {
@@ -115,43 +131,53 @@ test("canvas traces freeze commit boundaries without adding images to mutation r
       },
       { captureTrace: true },
     );
+
     const response = await operation.result;
     expect(response.ok).toBe(true);
+
     if (response.ok) expect(response.result).not.toHaveProperty("image");
     await browser.request("update_shape", {
       shape: { id: "shape:traced", type: "geo", text: "Later" },
     });
+
     const traces = () =>
       browser.messages.filter(
         (message): message is CanvasTraceMessage =>
           message.type === "canvas_trace" && message.requestId === operation.requestId,
       );
+
     await expect.poll(() => traces().length).toBe(2);
     const before = traces().find((capture) => capture.phase === "before");
     const after = traces().find((capture) => capture.phase === "after");
     expect(before?.outcome.status).toBe("captured");
     expect(after?.outcome.status).toBe("captured");
+
     if (before?.outcome.status !== "captured" || after?.outcome.status !== "captured")
       throw new Error("Missing trace captures");
     expect(before.outcome.document).not.toHaveProperty("shape:traced");
     expect(JSON.stringify(after.outcome.document["shape:traced"])).toContain("Original");
     expect(JSON.stringify(after.outcome.document["shape:traced"])).not.toContain("Later");
     expect(after.contextId).toBe("test");
+
     const dimensions = await page.evaluate(async (data) => {
       const fetched = await fetch(`data:image/png;base64,${data}`);
       const image = await createImageBitmap(await fetched.blob());
       const size = { w: image.width, h: image.height };
       image.close();
+
       return size;
     }, after.outcome.image.data);
+
     expect(dimensions.w).toBeGreaterThan(1);
     expect(dimensions.w).toBeLessThanOrEqual(2048);
     expect(dimensions.h).toBeLessThanOrEqual(2048);
+
     const failed = browser.begin(
       "update_shape",
       { shape: { id: "shape:missing", type: "geo" } },
       { captureTrace: true },
     );
+
     expect((await failed.result).ok).toBe(false);
     await expect
       .poll(() =>
@@ -163,29 +189,37 @@ test("canvas traces freeze commit boundaries without adding images to mutation r
         ),
       )
       .toBe(true);
+
     const read = browser.begin(
       "get_canvas",
       { scope: "page", includeImage: true },
       { captureTrace: true },
     );
+
     const observed = await read.result;
+
     if (!observed.ok || !("image" in observed.result) || !observed.result.image)
       throw new Error("Missing model observation image");
     await trace.close();
+
     const events = (await readFile(join(directory, "events.jsonl"), "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
+
     const saved = events.find(
       (event) => event.data?.requestId === operation.requestId && event.data?.phase === "after",
     );
+
     expect(saved.data.outcome.image.data).toBeUndefined();
     expect(await readFile(join(directory, saved.data.outcome.image.artifact))).toEqual(
       Buffer.from(after.outcome.image.data, "base64"),
     );
+
     const savedRead = events.find(
       (event) => event.data?.requestId === read.requestId && event.event === "canvas_response",
     );
+
     expect(await readFile(join(directory, savedRead.data.result.image.artifact))).toEqual(
       Buffer.from(observed.result.image.data, "base64"),
     );
@@ -207,6 +241,7 @@ test("debug read capture is separate from model-visible images and can be disabl
   await browser.open();
   const read = browser.begin("get_canvas", { includeImage: false }, { captureTrace: true });
   const response = await read.result;
+
   if (!response.ok) throw new Error(response.error);
   expect(response.result).not.toHaveProperty("image");
   await expect
@@ -235,11 +270,13 @@ test("debug read capture is separate from model-visible images and can be disabl
     .toBe(true);
   await browser.request("put_shape", { shape: { type: "geo", text: "Untraced" } });
   expect(browser.messages.filter((message) => message.type === "canvas_trace")).toHaveLength(2);
+
   const wrongPage = browser.begin(
     "delete_shapes",
     { ids: [] },
     { captureTrace: true, pageId: "page:elsewhere" },
   );
+
   expect((await wrongPage.result).ok).toBe(false);
   expect(
     browser.messages.some(
@@ -258,6 +295,7 @@ test("batch drawing commits native shapes and bindings without a permanent sideb
   const browser = new CanvasBrowser(page);
   await browser.open();
   await expect(page.getByRole("complementary")).toHaveCount(0);
+
   const result = await browser.request(
     "put_shapes",
     {
@@ -269,11 +307,14 @@ test("batch drawing commits native shapes and bindings without a permanent sideb
     },
     { style: { color: "blue", font: "mono" } },
   );
+
   expect(result.createdShapeIds).toHaveLength(3);
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  expect(snapshot.shapes.find((shape) => shape.id === "shape:a")?.text).toBe("Alpha");
-  expect(snapshot.shapes.find((shape) => shape.id === "shape:a")?.props?.color).toBe("blue");
-  expect(snapshot.shapes.find((shape) => shape.id === "shape:arrow")?.endShapeId).toBe("shape:b");
+  expect(snapshot.shapes.find((element) => element.id === "shape:a")?.text).toBe("Alpha");
+  expect(snapshot.shapes.find((element) => element.id === "shape:a")?.props?.color).toBe("blue");
+  expect(snapshot.shapes.find((element) => element.id === "shape:arrow")?.endShapeId).toBe(
+    "shape:b",
+  );
   expect(snapshot.image).toBeUndefined();
 });
 
@@ -292,14 +333,18 @@ test("large canvas images are resized before sending while shape coordinates rem
     (["page", "selection", "viewport"] as const).map(async (scope) => {
       const snapshot = await browser.request("get_canvas", { scope, includeImage: true });
       expect(snapshot.image).toBeDefined();
+
       if (!snapshot.image) throw new Error("Missing canvas snapshot image");
+
       const dimensions = await page.evaluate(async (data) => {
         const response = await fetch(`data:image/png;base64,${data}`);
         const image = await createImageBitmap(await response.blob());
         const result = { w: image.width, h: image.height };
         image.close();
+
         return result;
       }, snapshot.image.data);
+
       expect(dimensions.w).toBeGreaterThan(0);
       expect(dimensions.h).toBeGreaterThan(0);
       expect(dimensions.w).toBeLessThanOrEqual(2048);
@@ -320,35 +365,43 @@ test("invalid batches, expired requests, and stale edits leave existing shapes i
     shape: { id: "keep", type: "geo", x: 100, y: 100, text: "Keep" },
   });
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  const original = snapshot.shapes.find((shape) => shape.id === "shape:keep");
+  const original = snapshot.shapes.find((element) => element.id === "shape:keep");
   expect(original?.revision).toBeTruthy();
+
   const invalid = await browser.begin("put_shapes", {
     shapes: [
       { id: "partial", type: "geo" },
       { id: "invalid", type: "not-a-shape" },
     ],
   }).result;
+
   expect(invalid.ok).toBe(false);
+
   const expired = await browser.begin(
     "delete_shapes",
     { ids: ["shape:keep"] },
     { deadlineAt: Date.now() - 1 },
   ).result;
+
   expect(expired.ok).toBe(false);
+
   const wrongPage = await browser.begin(
     "delete_shapes",
     { ids: ["shape:keep"] },
     { pageId: "page:elsewhere" },
   ).result;
+
   expect(wrongPage.ok).toBe(false);
+
   const stale = await browser.begin(
     "update_shape",
     { shape: { id: "shape:keep", type: "geo", text: "Overwrite" } },
     { expectedShapes: { "shape:keep": "stale" } },
   ).result;
+
   expect(stale.ok).toBe(false);
   const after = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  expect(after.shapes.map((shape) => shape.id)).toEqual(["shape:keep"]);
+  expect(after.shapes.map((element) => element.id)).toEqual(["shape:keep"]);
   expect(after.shapes[0]?.text).toBe("Keep");
 });
 
@@ -359,9 +412,11 @@ test("cancelling an asynchronous import preserves drawing performed while it wai
   await browser.open();
   let fetching = false;
   let release = (): void => undefined;
+
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   await page.route("**/slow-image.png", async (route) => {
     fetching = true;
     await blocked;
@@ -380,8 +435,8 @@ test("cancelling an asynchronous import preserves drawing performed while it wai
   expect((await pending.result).ok).toBe(false);
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
   expect(snapshot.shapes.length).toBeGreaterThan(0);
-  expect(snapshot.shapes.every((shape) => shape.type !== "image")).toBe(true);
-  expect(snapshot.shapes.every((shape) => !shape.meta?.piet)).toBe(true);
+  expect(snapshot.shapes.every((element) => element.type !== "image")).toBe(true);
+  expect(snapshot.shapes.every((element) => !element.meta?.piet)).toBe(true);
 });
 
 test("slow image preparation does not block canvas reads or short edits", async ({ page }) => {
@@ -389,9 +444,11 @@ test("slow image preparation does not block canvas reads or short edits", async 
   await browser.open();
   let fetching = false;
   let release = (): void => undefined;
+
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   await page.route("**/pending-image.png", async (route) => {
     fetching = true;
     await blocked;
@@ -405,6 +462,7 @@ test("slow image preparation does not block canvas reads or short edits", async 
   });
   const pending = browser.begin("put_image", { src: "http://127.0.0.1:5174/pending-image.png" });
   await expect.poll(() => fetching).toBe(true);
+
   try {
     expect(
       (await browser.request("get_canvas", { scope: "page", includeImage: false })).shapes,
@@ -415,6 +473,7 @@ test("slow image preparation does not block canvas reads or short edits", async 
   } finally {
     release();
   }
+
   const imported = await pending.result;
   expect(imported.ok).toBe(true);
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
@@ -428,6 +487,7 @@ test("successful image and Mermaid imports remain editable and have isolated und
 }) => {
   const browser = new CanvasBrowser(page);
   await browser.open();
+
   const image = await browser.request("put_image", {
     src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
     x: 80,
@@ -435,22 +495,25 @@ test("successful image and Mermaid imports remain editable and have isolated und
     w: 100,
     h: 100,
   });
+
   expect(image.createdAssetId).toBeTruthy();
+
   const diagram = await browser.request(
     "put_mermaid",
     { source: "flowchart LR\nA[Start] --> B[Finish]", x: 240, y: 100 },
     { style: { color: "blue", font: "mono" } },
   );
+
   expect(diagram.createdShapeIds.length).toBeGreaterThan(2);
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  expect(snapshot.shapes.some((shape) => shape.text === "Start")).toBe(true);
-  expect(snapshot.shapes.find((shape) => shape.text === "Start")?.props?.color).toBe("blue");
+  expect(snapshot.shapes.some((element) => element.text === "Start")).toBe(true);
+  expect(snapshot.shapes.find((element) => element.text === "Start")?.props?.color).toBe("blue");
   expect(snapshot.style).toEqual(browser.context?.style);
-  expect(snapshot.shapes.filter((shape) => shape.type === "image")).toHaveLength(1);
+  expect(snapshot.shapes.filter((element) => element.type === "image")).toHaveLength(1);
   await page.mouse.click(500, 500);
   await page.keyboard.press("ControlOrMeta+z");
   const undone = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  expect(undone.shapes.map((shape) => shape.id)).toEqual([image.createdShapeId]);
+  expect(undone.shapes.map((element) => element.id)).toEqual([image.createdShapeId]);
 });
 
 test("page-space movement works for a child of a rotated frame", async ({ page }) => {
@@ -477,11 +540,11 @@ test("page-space movement works for a child of a rotated frame", async ({ page }
     },
   });
   const before = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  const original = before.shapes.find((shape) => shape.id === "shape:child");
+  const original = before.shapes.find((element) => element.id === "shape:child");
   expect(original).toBeTruthy();
   await browser.request("move_shapes", { moves: [{ id: "shape:child", dx: 35, dy: -20 }] });
   const after = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  const moved = after.shapes.find((shape) => shape.id === "shape:child");
+  const moved = after.shapes.find((element) => element.id === "shape:child");
   expect(moved?.x).toBe((original?.x ?? 0) + 35);
   expect(moved?.y).toBe((original?.y ?? 0) - 20);
 });
@@ -513,10 +576,14 @@ test("nested shape batches commit together and failed updates do not partially r
     ],
   });
   const original = await browser.request("get_canvas", { scope: "page", includeImage: false });
-  expect(original.shapes.find((shape) => shape.id === "shape:child")?.parentId).toBe("shape:frame");
+  expect(original.shapes.find((element) => element.id === "shape:child")?.parentId).toBe(
+    "shape:frame",
+  );
+
   const failed = await browser.begin("update_shape", {
     shape: { id: "child", type: "geo", parentId: browser.context?.page.id, props: { w: -100 } },
   }).result;
+
   expect(failed.ok).toBe(false);
   const intact = await browser.request("get_canvas", { scope: "page", includeImage: false });
   expect(intact.shapes).toEqual(original.shapes);
@@ -531,11 +598,13 @@ test("unsupported Mermaid diagrams import through the native SVG asset handler",
 }) => {
   const browser = new CanvasBrowser(page);
   await browser.open();
+
   const result = await browser.request("put_mermaid", {
     source: 'pie title Share\n"A" : 60\n"B" : 40',
     x: 100,
     y: 100,
   });
+
   expect(result.fallback).toBe("svg");
   expect(result.createdShapeIds).toHaveLength(1);
   const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
@@ -547,7 +616,9 @@ test("root request cards stay fixed during zoom and automatically move completed
 }) => {
   const browser = new CanvasBrowser(page);
   await browser.open();
+
   if (!browser.context) throw new Error("Missing context");
+
   const run: RunSnapshot = {
     runId: "task:test",
     promptId: "prompt:test",
@@ -561,6 +632,7 @@ test("root request cards stay fixed during zoom and automatically move completed
     status: "running",
     activity: "Preparing shapes",
   };
+
   const root: RunSnapshot = {
     ...run,
     runId: run.promptId,
@@ -570,18 +642,21 @@ test("root request cards stay fixed during zoom and automatically move completed
     result: "Drawing started",
     createdAt: run.createdAt - 1,
   };
+
   const parallel: RunSnapshot = {
     ...run,
     runId: "other:root",
     promptId: "other:root",
     title: "Another question",
   };
+
   const sibling: RunSnapshot = {
     ...run,
     runId: "research:sibling",
     kind: "research",
     title: "Check architecture",
   };
+
   browser.send({ type: "run_update", run: root });
   browser.send({ type: "run_update", run });
   browser.send({ type: "run_update", run: sibling });

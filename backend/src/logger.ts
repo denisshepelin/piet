@@ -2,6 +2,7 @@ import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-
 
 /** Origin of a diagnostic event, independent of the executing agent. */
 export type LogSource = "backend" | "web";
+
 /** Agent role associated with SDK lifecycle events. */
 export type LogAgent = "main" | "research" | "canvas";
 
@@ -20,7 +21,7 @@ export type LogEvent = (record: Omit<LogRecord, "ts">) => void;
 
 const DELTA_EVENTS = new Set(["message_update", "tool_execution_update"]);
 
-const sessionEventData = (event: AgentSessionEvent): unknown => {
+const sessionEventData = (event: AgentSessionEvent) => {
   switch (event.type) {
     case "agent_end":
       return { messageCount: event.messages.length, willRetry: event.willRetry };
@@ -30,6 +31,7 @@ const sessionEventData = (event: AgentSessionEvent): unknown => {
       return { toolResultCount: event.toolResults.length };
     default: {
       const { type: _type, ...rest } = event;
+
       return Object.keys(rest).length > 0 ? rest : undefined;
     }
   }

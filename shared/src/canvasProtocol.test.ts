@@ -21,6 +21,7 @@ const run: RunSnapshot = {
   status: "running",
   activity: "Preparing",
 };
+
 const request: CanvasRequest = {
   type: "canvas_request",
   requestId: "request:a",
@@ -41,6 +42,7 @@ test("canvas requests and complete task snapshots survive serialization", () => 
   ]) {
     const parsed = parseServerMessage(JSON.stringify(message));
     assert.equal(parsed.ok, true);
+
     if (parsed.ok) assert.deepEqual(parsed.value, message);
   }
 });
@@ -56,6 +58,7 @@ test("socket boundaries reject malformed JSON and incomplete or mismatched paylo
   ]) {
     assert.equal(parseClientMessage(value).ok, false, value);
   }
+
   for (const value of [
     { ...request, pageId: undefined },
     { ...request, action: "delete_shapes" },
@@ -89,8 +92,10 @@ test("canvas trace messages validate artifacts and remain separate from tool res
       viewport: { x: 0, y: 0, w: 100, h: 100 },
     },
   };
+
   assert.equal(parseClientMessage(JSON.stringify(trace)).ok, true);
   assert.equal(parseServerMessage(JSON.stringify({ ...request, captureTrace: true })).ok, true);
+
   for (const invalid of [
     { ...trace, requestId: undefined },
     { ...trace, action: "unknown" },
@@ -106,6 +111,7 @@ test("canvas trace messages validate artifacts and remain separate from tool res
     },
   ])
     assert.equal(parseClientMessage(JSON.stringify(invalid)).ok, false);
+
   for (const outcome of [
     { status: "skipped", reason: "capacity" },
     { status: "error", error: "render failed" },

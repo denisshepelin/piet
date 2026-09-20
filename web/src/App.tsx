@@ -6,12 +6,13 @@ import { canvasUiComponents, CanvasUiProvider } from "./CanvasUiLayer.tsx";
 import { TldrawAgentBridge } from "./TldrawAgentBridge.tsx";
 import { useAgentSocket } from "./useAgentSocket.ts";
 
-const WS_URL = (import.meta.env.VITE_WS_URL as string | undefined) ?? "ws://localhost:8787";
+const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8787";
 
 /** Canvas-first Piet application shell with an opt-in history and settings inspector. */
 export const App = (): ReactElement => {
   const chat = useAgentSocket(WS_URL);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+
   return (
     <div className="piet-app">
       <CanvasUiProvider chat={chat}>

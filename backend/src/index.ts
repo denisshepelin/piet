@@ -15,13 +15,17 @@ import { CanvasConnection } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
 import { MAIN_SYSTEM_PROMPT, CANVAS_WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createSessionTrace } from "./sessionTrace.js";
-import { parseClientMessage, type ServerMessage } from "@piet/protocol";
+import { parseClientMessage, type CanvasJsonObject, type ServerMessage } from "@piet/protocol";
 
 const PORT = Number(process.env.PORT ?? 8787);
+
 const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "opencode-go";
+
 const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "minimax-m3";
+
 const DEFAULT_RESEARCH_MODEL_PROVIDER =
   process.env.RESEARCH_MODEL_PROVIDER ?? DEFAULT_MAIN_MODEL_PROVIDER;
+
 const DEFAULT_RESEARCH_MODEL_ID = process.env.RESEARCH_MODEL_ID ?? DEFAULT_MAIN_MODEL_ID;
 
 const RESEARCH_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. You receive one bounded task from the main canvas agent.
@@ -29,9 +33,13 @@ const RESEARCH_SYSTEM_APPENDIX = `You are a temporary Piet research subagent. Yo
 Inspect the repository, run read-only commands, and report concise findings. Do not edit files or run commands that modify the repository. You have no canvas API and must not attempt canvas edits. End with a compact handoff: outcome, evidence with file paths, verification, blockers, and canvas-ready content.`;
 
 const logDirectory = process.env.PIET_LOG_DIR ?? "logs";
+
 const captureTrace = process.env.PIET_CANVAS_TRACE !== "0";
+
 const mirrorStdout = process.env.PIET_LOG_STDOUT === "1";
+
 const activeTraces = new Set<ReturnType<typeof createSessionTrace>>();
+
 const readGitState = (): { revision: string; dirty: boolean } | undefined => {
   try {
     const options = {
@@ -39,6 +47,7 @@ const readGitState = (): { revision: string; dirty: boolean } | undefined => {
       timeout: 1000,
       stdio: ["ignore", "pipe", "ignore"],
     } satisfies ExecFileSyncOptionsWithStringEncoding;
+
     return {
       revision: execFileSync("git", ["rev-parse", "HEAD"], options).trim(),
       dirty: execFileSync("git", ["status", "--porcelain"], options).trim().length > 0,
@@ -47,6 +56,7 @@ const readGitState = (): { revision: string; dirty: boolean } | undefined => {
     return undefined;
   }
 };
+
 const gitState = readGitState();
 
 /**
@@ -54,7 +64,9 @@ const gitState = readGitState();
  * Settings and context files are therefore read once at startup, not per connection.
  */
 const modelRuntime = await ModelRuntime.create();
+
 const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
+
 const mainResourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: getAgentDir(),
@@ -66,12 +78,14 @@ const mainResourceLoader = new DefaultResourceLoader({
   systemPromptOverride: () => MAIN_SYSTEM_PROMPT,
   appendSystemPrompt: [],
 });
+
 const researchResourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: getAgentDir(),
   settingsManager,
   appendSystemPromptOverride: (base) => [...base, RESEARCH_SYSTEM_APPENDIX],
 });
+
 const canvasResourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: getAgentDir(),
@@ -83,6 +97,7 @@ const canvasResourceLoader = new DefaultResourceLoader({
   systemPromptOverride: () => CANVAS_WORKER_SYSTEM_PROMPT,
   appendSystemPrompt: [],
 });
+
 await Promise.all([
   mainResourceLoader.reload(),
   researchResourceLoader.reload(),
@@ -90,6 +105,7 @@ await Promise.all([
 ]);
 
 const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
+
 const handleTranscription = createSonioxTranscriptionHandler({
   apiKey: process.env.SONIOX_API_KEY?.trim()
     ? new RedactedSecret(process.env.SONIOX_API_KEY.trim())
@@ -106,24 +122,31 @@ const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>(["text_delta"]);
 wss.on("connection", async (socket, request) => {
   if (request.url === "/transcription") {
     handleTranscription(socket);
+
     return;
   }
+
   const connId = randomUUID();
   const directory = join(logDirectory, connId);
+
+  const manifest: CanvasJsonObject = {
+    sessionId: connId,
+    cwd: process.cwd(),
+    nodeVersion: process.version,
+    captureTrace,
+    mainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
+    researchModel: { provider: DEFAULT_RESEARCH_MODEL_PROVIDER, id: DEFAULT_RESEARCH_MODEL_ID },
+  };
+
+  if (gitState) manifest.git = gitState;
+
   const trace = createSessionTrace({
     directory,
-    manifest: {
-      sessionId: connId,
-      cwd: process.cwd(),
-      nodeVersion: process.version,
-      ...(gitState ? { git: gitState } : {}),
-      captureTrace,
-      mainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
-      researchModel: { provider: DEFAULT_RESEARCH_MODEL_PROVIDER, id: DEFAULT_RESEARCH_MODEL_ID },
-    },
+    manifest,
     now: () => new Date(),
     mirrorStdout,
   });
+
   activeTraces.add(trace);
   const { logEvent } = trace;
   console.log(`[log] session trace: ${directory}`);
@@ -134,16 +157,19 @@ wss.on("connection", async (socket, request) => {
     if (!UNLOGGED_MESSAGE_TYPES.has(message.type)) {
       logEvent({ source: "backend", connId, event: `ws.out.${message.type}`, data: message });
     }
+
     send(socket, message);
   };
 
   const actor = { id: `main:${connId}`, name: "Main agent", color: "#2563eb" };
+
   const canvasConnection = new CanvasConnection({
     actor,
     isConnected: () => socket.readyState === socket.OPEN,
     send: sendToClient,
     captureTrace,
   });
+
   const mainAgent = new MainAgentManager({
     actor,
     modelRuntime,
@@ -164,16 +190,21 @@ wss.on("connection", async (socket, request) => {
 
   socket.on("message", async (raw) => {
     const parsed = parseClientMessage(raw.toString());
+
     if (!parsed.ok) {
       sendToClient({ type: "error", message: parsed.error.message });
+
       return;
     }
+
     const message = parsed.value;
 
     if (message.type === "ping") {
       sendToClient({ type: "pong" });
+
       return;
     }
+
     if (message.type === "client_log") {
       for (const event of message.events) {
         logEvent({
@@ -183,26 +214,34 @@ wss.on("connection", async (socket, request) => {
           data: { level: event.level, clientTs: event.ts, payload: event.data },
         });
       }
+
       return;
     }
 
     if (message.type === "canvas_trace") {
       if (captureTrace) logEvent({ source: "web", connId, event: "canvas.trace", data: message });
+
       return;
     }
+
     logEvent({ source: "backend", connId, event: `ws.in.${message.type}`, data: message });
+
     if (message.type === "canvas_response") {
       canvasConnection.handleResponse(message);
+
       return;
     }
+
     try {
       await mainAgent.handle(message);
     } catch (error) {
-      sendToClient({
+      const errorMessage: ServerMessage = {
         type: "error",
-        ...(message.type === "prompt" ? { promptId: message.id } : {}),
         message: error instanceof Error ? error.message : String(error),
-      });
+      };
+
+      if (message.type === "prompt") errorMessage.promptId = message.id;
+      sendToClient(errorMessage);
     }
   });
 
@@ -228,14 +267,17 @@ wss.on("connection", async (socket, request) => {
 
 const shutdown = async (): Promise<void> => {
   const serverClosed = new Promise<void>((resolve) => wss.close(() => resolve()));
+
   for (const socket of wss.clients) socket.terminate();
   await serverClosed;
   await Promise.all([...activeTraces].map((trace) => trace.close()));
   process.exit(0);
 };
+
 process.once("SIGINT", () => {
   void shutdown();
 });
+
 process.once("SIGTERM", () => {
   void shutdown();
 });

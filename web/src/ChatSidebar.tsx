@@ -1,5 +1,4 @@
 import * as React from "react";
-import type { ModelThinkingLevel } from "@piet/protocol";
 import { useEditor } from "tldraw";
 import type { AgentRole, ModelRef } from "@piet/protocol";
 import type { AgentChat, ChatMessage } from "./useAgentSocket.ts";
@@ -8,6 +7,7 @@ import { canvasTaskOutput, isCanvasTaskActive } from "./canvasTasks.ts";
 import { groupCanvasRequests } from "./canvasRequestGroups.ts";
 
 const { useState } = React;
+
 type ReactElement = React.ReactElement;
 
 type Props = {
@@ -19,8 +19,11 @@ const AGENT_ROLES: AgentRole[] = ["main", "research"];
 
 const roleLabel = (role: ChatMessage["role"]): string => {
   if (role === "user") return "you";
+
   if (role === "assistant") return "pi";
+
   if (role === "tool") return "tool";
+
   return "system";
 };
 
@@ -29,15 +32,18 @@ const encodeModel = (model: ModelRef): string => `${model.provider}/${model.id}`
 const decodeModel = (value: string): ModelRef | null => {
   const [provider, ...rest] = value.split("/");
   const id = rest.join("/");
+
   return provider && id ? { provider, id } : null;
 };
 
 /** Model and thinking-level pickers for one agent role in inspector settings. */
 const RoleControls = ({ chat, role }: { chat: AgentChat; role: AgentRole }): ReactElement => {
   const { current, thinkingLevel, availableThinkingLevels } = chat.roles[role];
+
   const modelInfo = chat.models.find(
     (model) => model.provider === current?.provider && model.id === current?.id,
   );
+
   const thinkingDisabled = !chat.ready || availableThinkingLevels.length <= 1;
 
   return (
@@ -50,6 +56,7 @@ const RoleControls = ({ chat, role }: { chat: AgentChat; role: AgentRole }): Rea
         value={current ? encodeModel(current) : ""}
         onChange={(event) => {
           const selection = decodeModel(event.target.value);
+
           if (selection) chat.setModel(role, selection);
         }}
         disabled={!chat.ready || chat.models.length === 0}
@@ -71,7 +78,13 @@ const RoleControls = ({ chat, role }: { chat: AgentChat; role: AgentRole }): Rea
       <select
         id={`piet-thinking-${role}`}
         value={thinkingLevel}
-        onChange={(event) => chat.setThinking(role, event.target.value as ModelThinkingLevel)}
+        onChange={(event) => {
+          const level = availableThinkingLevels.find(
+            (candidate) => candidate === event.target.value,
+          );
+
+          if (level !== undefined) chat.setThinking(role, level);
+        }}
         disabled={thinkingDisabled}
         title={modelInfo && !modelInfo.reasoning ? `${role} model has no reasoning` : undefined}
       >
@@ -87,9 +100,13 @@ const RoleControls = ({ chat, role }: { chat: AgentChat; role: AgentRole }): Rea
 
 const taskStatusLabel = (task: RunSnapshot): string => {
   if (task.status === "queued") return "queued";
+
   if (task.status === "running") return "working";
+
   if (task.status === "done") return "done";
+
   if (task.status === "error") return "error";
+
   return "cancelled";
 };
 
@@ -114,7 +131,9 @@ const TaskInspectorRow = ({ task, chat }: { task: RunSnapshot; chat: AgentChat }
           type="button"
           onClick={() => {
             const page = editor.getPages().find(({ id }) => id === task.pageId);
+
             if (!page) return;
+
             if (page.id !== editor.getCurrentPageId()) editor.setCurrentPage(page);
             window.requestAnimationFrame(() => editor.centerOnPoint(task.anchor));
           }}

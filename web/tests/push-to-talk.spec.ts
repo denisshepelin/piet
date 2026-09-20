@@ -15,6 +15,9 @@ declare global {
 }
 
 const actor = { id: "main:voice-test", name: "Piet", color: "blue" };
+
+const isTextSocketFrame = (value: string | Buffer): value is string => typeof value === "string";
+
 const openVoiceBrowser = async (page: Page) => {
   await page.addInitScript(() => {
     window.voiceTestStreams = [];
@@ -22,6 +25,7 @@ const openVoiceBrowser = async (page: Page) => {
     navigator.mediaDevices.getUserMedia = async (constraints) => {
       const stream = await getUserMedia(constraints);
       window.voiceTestStreams.push(stream);
+
       return stream;
     };
   });
@@ -37,7 +41,7 @@ const openVoiceBrowser = async (page: Page) => {
       transcription = socket;
       recordings++;
       socket.onMessage((message) => {
-        if (typeof message === "string") controls.push(message);
+        if (isTextSocketFrame(message)) controls.push(message);
         else audio.push(message);
       });
       socket.onClose(() => closed++);
@@ -46,6 +50,7 @@ const openVoiceBrowser = async (page: Page) => {
       agent = socket;
       socket.onMessage((raw) => {
         const parsed = parseClientMessage(raw.toString());
+
         if (!parsed.ok) throw parsed.error;
         messages.push(parsed.value);
       });
@@ -55,6 +60,7 @@ const openVoiceBrowser = async (page: Page) => {
   await page.goto("/");
   const button = page.getByRole("button", { name: "Hold to record voice request" });
   await expect(button).toBeEnabled();
+
   return {
     button,
     messages,
@@ -80,6 +86,7 @@ const openVoiceBrowser = async (page: Page) => {
     },
   };
 };
+
 const expectMicrophoneStopped = async (page: Page): Promise<void> => {
   await expect
     .poll(() =>
@@ -101,6 +108,7 @@ test("hold streams audio; release drains final audio and submits once with recor
   await input.press("Enter");
   await expect.poll(() => h.prompts().length).toBe(1);
   const initial = h.prompts()[0];
+
   if (!initial) throw new Error("Missing initial canvas context");
   await h.hold();
   h.send({ type: "transcript", text: "Fill these" });
@@ -224,6 +232,7 @@ test("release before microphone permission resolves discards the late stream", a
     navigator.mediaDevices.getUserMedia = async (constraints) => {
       const stream = await getUserMedia(constraints);
       await new Promise((resolve) => setTimeout(resolve, 500));
+
       return stream;
     };
   });

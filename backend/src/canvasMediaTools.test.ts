@@ -4,7 +4,11 @@ import type { RequestCanvas } from "./canvasConnection.js";
 import { createCanvasTools } from "./canvasTools.js";
 
 test("registers dedicated native media and path tools", () => {
-  const { tools } = createCanvasTools((() => Promise.resolve({})) as RequestCanvas);
+  const requestCanvas: RequestCanvas = async () => {
+    throw new Error("canvas request is not used while registering tools");
+  };
+
+  const { tools } = createCanvasTools(requestCanvas);
 
   const names = tools.map(({ name }) => name);
   assert.ok(names.includes("put_image"));

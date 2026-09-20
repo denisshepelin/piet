@@ -20,8 +20,10 @@ class TaskBrowser {
       this.socket = socket;
       socket.onMessage((raw) => {
         const parsed = parseClientMessage(raw.toString());
+
         if (!parsed.ok) throw parsed.error;
         const message: ClientMessage = parsed.value;
+
         if (message.type === "prompt") this.context = message.canvasContext;
       });
       socket.send(JSON.stringify({ type: "ready", actor } satisfies ServerMessage));
@@ -45,6 +47,7 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
 }) => {
   const browser = new TaskBrowser(page);
   await browser.open();
+
   if (!browser.context) throw new Error("Missing canvas context");
 
   const run: RunSnapshot = {
@@ -60,15 +63,18 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
     status: "running",
     activity: "Reading repository",
   };
+
   browser.send({ type: "run_update", run });
 
   const card = page.getByRole("article", { name: "Camera task", exact: true });
   await expect(card).toBeVisible();
   const beforePan = await card.boundingBox();
+
   if (!beforePan) throw new Error("Task window has no screen bounds");
 
   const canvas = page.locator(".tl-canvas");
   const canvasBounds = await canvas.boundingBox();
+
   if (!canvasBounds) throw new Error("Canvas has no screen bounds");
   await page.mouse.move(canvasBounds.x + 700, canvasBounds.y + 600);
   await page.mouse.down({ button: "middle" });
@@ -82,6 +88,7 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
   await expect.poll(() => browser.context?.viewport.x).not.toBe(initialViewport.x);
   expect(await card.boundingBox()).toEqual(beforePan);
   const beforeZoom = await card.boundingBox();
+
   if (!beforeZoom) throw new Error("Task window disappeared after pan");
   await page.mouse.click(canvasBounds.x + 800, canvasBounds.y + 600);
   const zoomButton = page.getByRole("button", { name: /^Zoom —/ });
@@ -89,6 +96,7 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
   await page.keyboard.down("Control");
   await page.mouse.wheel(0, -20);
   await page.keyboard.up("Control");
+
   if (previousZoom) await expect(zoomButton).not.toHaveText(previousZoom);
   await expect(card).toBeVisible();
   expect(await card.boundingBox()).toEqual(beforeZoom);

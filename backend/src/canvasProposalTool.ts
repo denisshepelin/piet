@@ -4,12 +4,13 @@ import { canvasActionSchemas } from "@piet/protocol";
 
 const MAX_MERMAID_SOURCE_LENGTH = 50_000;
 
-const proposedShapesSchema = canvasActionSchemas.put_shapes.params.properties.shapes;
+const proposedElementsSchema = canvasActionSchemas.put_shapes.params.properties.shapes;
+
 const canvasProposalSchema = Type.Union([
   Type.Object({ type: Type.Literal("image"), ...canvasActionSchemas.put_image.params.properties }),
   Type.Object({
     type: Type.Literal("shapes"),
-    shapes: proposedShapesSchema,
+    shapes: proposedElementsSchema,
   }),
   Type.Object({
     type: Type.Literal("mermaid"),
@@ -48,12 +49,14 @@ export const createCanvasProposalTool = (
     parameters: canvasProposalSchema,
     async execute(_toolCallId, proposal) {
       onProposal(proposal);
+
       const count =
         proposal.type === "shapes"
           ? `${proposal.shapes.length} shape(s)`
           : proposal.type === "image"
             ? "Image import"
             : "Mermaid source";
+
       return {
         content: [{ type: "text", text: `Canvas proposal captured: ${count}.` }],
         details: proposal,

@@ -8,6 +8,7 @@ import {
   type CanvasRequest,
   type CanvasResponse,
   type CanvasStyle,
+  type CanvasToolResult,
   type ServerMessage,
 } from "@piet/protocol";
 
@@ -20,7 +21,7 @@ export type CanvasRequestContext = {
 };
 
 type PendingCanvasRequest = {
-  resolve: (result: unknown) => void;
+  resolve: (result: CanvasToolResult) => void;
   reject: (error: Error) => void;
   cleanup: () => void;
 };
@@ -60,15 +61,19 @@ export class CanvasConnection {
   ): Promise<CanvasActionResult<A>> {
     if (!this.#options.isConnected())
       return Promise.reject(new Error("Canvas connection is closed"));
+
     if (signal?.aborted) return Promise.reject(new Error("Canvas request was cancelled"));
     const requestId = randomUUID();
     const timeoutMs = this.#options.timeoutMs ?? 30_000;
+
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#reject(requestId, new Error(`Canvas request timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+
       const onAbort = (): void =>
         this.#reject(requestId, new Error("Canvas request was cancelled"));
+
       this.#pending.set(requestId, {
         resolve: (result) => {
           if (isCanvasActionResult(action, result)) resolve(result);
@@ -81,6 +86,7 @@ export class CanvasConnection {
         },
       });
       signal?.addEventListener("abort", onAbort, { once: true });
+
       // SAFETY: action and params are correlated by the generic signature; TypeScript cannot distribute the generic over CanvasRequest here.
       const request = {
         type: "canvas_request",
@@ -90,8 +96,10 @@ export class CanvasConnection {
         params,
         ...context,
         deadlineAt: Date.now() + timeoutMs,
-        ...(this.#options.captureTrace ? { captureTrace: true } : {}),
       } as CanvasRequest;
+
+      if (this.#options.captureTrace) request.captureTrace = true;
+
       try {
         this.#options.send(request);
       } catch (error) {
@@ -103,9 +111,11 @@ export class CanvasConnection {
   /** Ignore late responses after cancellation; validate successful results against their original action. */
   handleResponse(response: CanvasResponse): void {
     const request = this.#pending.get(response.requestId);
+
     if (!request) return;
     this.#pending.delete(response.requestId);
     request.cleanup();
+
     if (response.ok) request.resolve(response.result);
     else request.reject(new Error(response.error));
   }
@@ -118,10 +128,12 @@ export class CanvasConnection {
 
   #reject(requestId: string, error: Error): void {
     const request = this.#pending.get(requestId);
+
     if (!request) return;
     this.#pending.delete(requestId);
     request.cleanup();
     request.reject(error);
+
     if (this.#options.isConnected()) this.#options.send({ type: "canvas_cancel", requestId });
   }
 }
