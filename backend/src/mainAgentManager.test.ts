@@ -11,7 +11,12 @@ import {
   ModelRuntime,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { isCanvasActionResult, type PromptCanvasContext, type ServerMessage } from "@piet/protocol";
+import {
+  isCanvasActionResult,
+  type CanvasJsonObject,
+  type PromptCanvasContext,
+  type ServerMessage,
+} from "@piet/protocol";
 import type { RequestCanvas } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
 
@@ -23,29 +28,35 @@ const context: PromptCanvasContext = {
   viewport: { x: 0, y: 0, w: 1000, h: 800 },
   selection: { selectedShapeIds: [], shapeCount: 0, truncated: false, shapes: [] },
 };
+
 const until = async (condition: () => boolean): Promise<void> => {
   for (let attempt = 0; attempt < 200; attempt++) {
     if (condition()) return;
     // oxlint-disable-next-line no-await-in-loop
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+
   assert.fail("Main session did not reach the expected state");
 };
 
 const createHarness = async (requestCanvas?: RequestCanvas) => {
   const sent: ServerMessage[] = [];
+
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
     modelsPath: null,
     allowModelNetwork: false,
   });
+
   const model = runtime.getModels("openai")[0];
   assert.ok(model);
   await runtime.setRuntimeApiKey("openai", "test-key-not-used-for-network");
+
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
   });
+
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: "/tmp/piet-test-agent-resources",
@@ -57,12 +68,16 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
     systemPromptOverride: () => "Reply briefly",
     appendSystemPrompt: [],
   });
+
   await loader.reload();
-  type ToolCall = { name: string; arguments: Record<string, unknown> };
+
+  type ToolCall = { name: string; arguments: CanvasJsonObject };
+
   const completions: Array<(text: string, toolCall?: ToolCall) => void> = [];
   const prompts: string[] = [];
   const promptTools: string[][] = [];
   let canvasReads = 0;
+
   const manager = new MainAgentManager({
     actor: { id: "main:test", name: "Piet", color: "blue" },
     modelRuntime: runtime,
@@ -90,8 +105,9 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
         promptTools.push(input.tools?.map((tool) => tool.name) ?? []);
         const user = input.messages.findLast((message) => message.role === "user");
         prompts.push(
-          user && typeof user.content === "string" ? user.content : JSON.stringify(user?.content),
+          user && !Array.isArray(user.content) ? user.content : JSON.stringify(user?.content),
         );
+
         const message = (
           text: string,
           stopReason: "stop" | "aborted" | "toolUse",
@@ -112,19 +128,23 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
           stopReason,
           timestamp: Date.now(),
         });
+
         let finished = false;
+
         const abort = (): void => {
           if (finished) return;
           finished = true;
           stream.push({ type: "error", reason: "aborted", error: message("", "aborted") });
           stream.end();
         };
+
         streamOptions?.signal?.addEventListener("abort", abort, { once: true });
         completions.push((text, toolCall) => {
           if (finished) return;
           finished = true;
           streamOptions?.signal?.removeEventListener("abort", abort);
           const final = message(text, toolCall ? "toolUse" : "stop");
+
           if (toolCall)
             final.content.push({ type: "toolCall", id: `call-${completions.length}`, ...toolCall });
           stream.push({ type: "start", partial: final });
@@ -134,17 +154,22 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
           stream.push({ type: "done", reason: toolCall ? "toolUse" : "stop", message: final });
           stream.end();
         });
+
         return stream;
       };
+
       return created;
     },
   });
+
   await manager.initialize();
+
   return { manager, sent, prompts, promptTools, completions, canvasReads: () => canvasReads };
 };
 
 test("real main sessions serialize prompts, capture intent, and avoid unconditional screenshots", async () => {
   const harness = await createHarness();
+
   try {
     await harness.manager.handle({
       type: "prompt",
@@ -195,6 +220,7 @@ test("real main sessions serialize prompts, capture intent, and avoid unconditio
 
 test("research synthesis retains the original worksheet request after another user turn", async () => {
   const harness = await createHarness();
+
   const worksheetContext: PromptCanvasContext = {
     ...context,
     selection: {
@@ -207,6 +233,7 @@ test("research synthesis retains the original worksheet request after another us
       ],
     },
   };
+
   try {
     await harness.manager.handle({
       type: "prompt",
@@ -238,12 +265,14 @@ test("research synthesis retains the original worksheet request after another us
     await until(() => harness.sent.some((m) => m.type === "prompt_done" && m.promptId === "other"));
     harness.completions[researchIndex]?.("Pro: single binary. Con: replace the Pi runtime.");
     await until(() => harness.completions.length === 5);
+
     const synthesisRun = harness.sent.findLast(
       (message) =>
         message.type === "run_update" &&
         message.run.kind === "response" &&
         message.run.status === "running",
     );
+
     assert.ok(synthesisRun?.type === "run_update");
     assert.equal(synthesisRun.run.promptId, "worksheet");
     assert.notEqual(synthesisRun.run.runId, "worksheet");
@@ -264,7 +293,8 @@ test("research synthesis retains the original worksheet request after another us
 test("canvas completion retains browser layout warnings instead of claiming a clean layout", async () => {
   const harness = await createHarness(async (action) => {
     assert.equal(String(action), "put_shapes");
-    const result: unknown = {
+
+    const result = {
       createdShapeIds: ["shape:summary"],
       lints: [
         {
@@ -274,9 +304,12 @@ test("canvas completion retains browser layout warnings instead of claiming a cl
         },
       ],
     };
+
     if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
     return result;
   });
+
   try {
     await harness.manager.handle({
       type: "prompt",
@@ -307,12 +340,14 @@ test("canvas completion retains browser layout warnings instead of claiming a cl
           message.run.status === "done",
       ),
     );
+
     const completion = harness.sent.findLast(
       (message) =>
         message.type === "run_update" &&
         message.run.kind === "canvas" &&
         message.run.status === "done",
     );
+
     assert.ok(completion?.type === "run_update" && completion.run.status === "done");
     assert.match(completion.run.result, /Drawing committed with layout warnings/);
     assert.match(completion.run.result, /overlaps text of shape:recommendation/);
@@ -324,6 +359,7 @@ test("canvas completion retains browser layout warnings instead of claiming a cl
 
 test("cancelling queued and active responses releases the session for another user request", async () => {
   const harness = await createHarness();
+
   try {
     await harness.manager.handle({
       type: "prompt",
@@ -354,6 +390,7 @@ test("cancelling queued and active responses releases the session for another us
         (message) => message.type === "prompt_done" && message.promptId === "three",
       ),
     );
+
     for (const id of ["one", "two"])
       assert.ok(
         harness.sent.some(

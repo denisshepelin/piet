@@ -12,6 +12,8 @@ export interface PushToTalkSession {
   cancel(): void;
 }
 
+const isTextWebSocketMessage = (value: unknown): value is string => typeof value === "string";
+
 /** Streams browser audio through Piet, stopping capture before waiting for final transcription. */
 export const startPushToTalkSession = (options: {
   readonly url: string;
@@ -35,45 +37,58 @@ export const startPushToTalkSession = (options: {
   const publish = (): void => {
     if (phase !== "closed") options.onState({ phase, text: transcript });
   };
+
   const cleanup = (): void => {
     phase = "closed";
     clearTimeout(timer);
     clearTimeout(recordingTimer);
     pending = [];
+
     if (recorder && recorder.state !== "inactive") recorder.stop();
     microphone?.getTracks().forEach((track) => track.stop());
     socket?.close();
   };
+
   const fail = (message: string): void => {
     if (phase === "closed") return;
     cleanup();
     options.onState({ phase: "error", message });
   };
+
   const deadline = (ms: number, message: string): void => {
     clearTimeout(timer);
     timer = setTimeout(() => fail(message), ms);
   };
+
   const flush = (): void => {
     if (!ready || !socket || socket.readyState !== WebSocket.OPEN || phase === "closed") return;
+
     if (socket.bufferedAmount + bufferedBytes > transcriptionLimits.bufferedBytes) {
       fail("Voice recording connection is too slow. Please try again.");
+
       return;
     }
+
     for (const chunk of pending) socket.send(chunk);
     pending = [];
     bufferedBytes = 0;
+
     if (phase === "finishing" && recorderStopped && !finishSent) {
       finishSent = true;
       socket.send("finish");
     }
   };
+
   const session: PushToTalkSession = {
     finish: () => {
       if (phase === "closed" || phase === "finishing") return;
+
       if (!recorder || recorder.state !== "recording") {
         session.cancel();
+
         return;
       }
+
       phase = "finishing";
       clearTimeout(recordingTimer);
       publish();
@@ -86,11 +101,13 @@ export const startPushToTalkSession = (options: {
     },
     cancel: () => {
       if (phase === "closed") return;
+
       if (socket?.readyState === WebSocket.OPEN) socket.send("cancel");
       cleanup();
       options.onState({ phase: "idle" });
     },
   };
+
   publish();
   deadline(
     transcriptionLimits.connectionMs,
@@ -99,48 +116,68 @@ export const startPushToTalkSession = (options: {
   void (async () => {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       fail("Voice recording needs a supported browser on HTTPS or localhost.");
+
       return;
     }
+
     const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find(
       (type) => MediaRecorder.isTypeSupported(type),
     );
+
     if (!mimeType) {
       fail("Voice recording requires WebM or Ogg audio. Try Chrome or Firefox.");
+
       return;
     }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
       if (isClosed()) {
         stream.getTracks().forEach((track) => track.stop());
+
         return;
       }
+
       microphone = stream;
+
       for (const track of stream.getAudioTracks()) {
         track.addEventListener("ended", () => {
           if (phase === "recording") fail("Voice recording microphone was disconnected.");
         });
       }
+
       const connection = new WebSocket(options.url);
       socket = connection;
       connection.addEventListener("message", (event: MessageEvent<unknown>) => {
         if (phase === "closed") return;
-        if (typeof event.data !== "string") {
+
+        if (!isTextWebSocketMessage(event.data)) {
           fail("Voice transcription returned an invalid message.");
+
           return;
         }
+
         const parsed = parseTranscriptionEvent(event.data);
+
         if (!parsed.ok) {
           fail("Voice transcription returned an invalid message.");
+
           return;
         }
+
         const message = parsed.value;
+
         switch (message.type) {
           case "ready":
             if (ready) {
               fail("Voice transcription returned a duplicate ready message.");
+
               return;
             }
+
             ready = true;
+
             if (phase === "recording") clearTimeout(timer);
             flush();
             break;
@@ -151,10 +188,13 @@ export const startPushToTalkSession = (options: {
           case "finished": {
             if (phase !== "finishing" || !finishSent) {
               fail("Voice transcription finished before recording was released.");
+
               return;
             }
+
             const text = message.text.trim();
             cleanup();
+
             if (text) {
               options.onState({ phase: "idle" });
               options.onTranscript(text);
@@ -165,6 +205,7 @@ export const startPushToTalkSession = (options: {
               });
             break;
           }
+
           case "error":
             fail(message.message);
             break;
@@ -181,18 +222,23 @@ export const startPushToTalkSession = (options: {
       capture.addEventListener("dataavailable", ({ data }) => {
         if (phase === "closed" || data.size === 0) return;
         bufferedBytes += data.size;
+
         if (bufferedBytes > transcriptionLimits.bufferedBytes) {
           fail("Voice recording exceeded its audio buffer limit.");
+
           return;
         }
+
         pending.push(data);
         flush();
       });
       capture.addEventListener("stop", () => {
         if (phase === "recording") {
           fail("Voice recording stopped unexpectedly. Please try again.");
+
           return;
         }
+
         recorderStopped = true;
         flush();
       });
@@ -214,5 +260,6 @@ export const startPushToTalkSession = (options: {
       );
     }
   })();
+
   return session;
 };

@@ -11,7 +11,9 @@ export const createCanvasSocketServer = (
     "http://localhost:4173",
     "http://127.0.0.1:4173",
   ]);
+
   if (additionalOrigin) origins.add(new URL(additionalOrigin).origin);
+
   return new WebSocketServer({
     host: "127.0.0.1",
     port,

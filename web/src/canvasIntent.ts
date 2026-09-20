@@ -14,14 +14,17 @@ const isCanvasPoint = (point: CanvasPoint | null | undefined): point is CanvasPo
 
 const getIntentAnchor = (editor: Editor): CanvasPoint => {
   const selection = editor.getSelectionPageBounds();
+
   if (selection && Number.isFinite(selection.x) && Number.isFinite(selection.y)) {
     return { x: selection.x + selection.w + 24, y: selection.y };
   }
 
   const pointer = editor.inputs.currentPagePoint;
+
   if (isCanvasPoint(pointer)) return { x: pointer.x, y: pointer.y };
 
   const viewport = editor.getViewportPageBounds();
+
   return { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
 };
 
@@ -36,9 +39,11 @@ export const submitCanvasIntent = (
   text: string,
 ): boolean => {
   const trimmed = text.trim();
+
   if (!chat.ready || trimmed.length === 0) return false;
 
   const canvasContext = captureCanvasIntentContext(editor);
   chat.send(trimmed, canvasContext);
+
   return true;
 };

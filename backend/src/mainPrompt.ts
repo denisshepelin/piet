@@ -1,5 +1,5 @@
 /** Model-facing native shape reference; runtime validation remains owned by tldraw. */
-export const CANVAS_SHAPE_REFERENCE = `put_shape / update_shape / propose_canvas contract (compact tldraw 5.4 declaration):
+export const CANVAS_ELEMENT_REFERENCE = `put_shape / update_shape / propose_canvas contract (compact tldraw 5.4 declaration):
 
 type Color = "black" | "grey" | "light-violet" | "violet" | "blue" | "light-blue" | "yellow" | "orange" | "green" | "light-green" | "light-red" | "red" | "white";
 type Size = "s" | "m" | "l" | "xl";
@@ -42,7 +42,7 @@ The user keeps drawing while tasks run. Never change the shared camera unless ex
 
 ${CANVAS_RESEARCH_SUMMARY_GUIDANCE}
 
-${CANVAS_SHAPE_REFERENCE}
+${CANVAS_ELEMENT_REFERENCE}
 
 Keep spoken/typed replies concise. Do not wait for background results in the current turn.`;
 
@@ -55,4 +55,4 @@ ${CANVAS_RESEARCH_SUMMARY_GUIDANCE}
 
 Text layout: autoSize false constrains width, NOT height. Wrapped text grows downward; separate background rectangles do not contain or resize it. Avoid blank lines between bullets. Budget for wrapped lines, not bullet count, and leave a clear gap below the tallest text block before a recommendation. Do not place a footer at a guessed fixed y coordinate through unmeasured text. Prefer fewer short text shapes without background panels; when a box is necessary, use its own top-level text rather than placing an independent long text shape over it. You cannot measure text with live tools, so keep copy conservative and leave generous slack. Do not claim the layout has been visually verified.
 
-${CANVAS_SHAPE_REFERENCE}`;
+${CANVAS_ELEMENT_REFERENCE}`;

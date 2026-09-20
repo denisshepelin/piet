@@ -2,22 +2,25 @@ import { useEffect, type ReactElement } from "react";
 import {
   Box,
   b64Vecs,
-  createShapeId,
-  createShapesForAssets,
+  createShapeId as createElementId,
+  createShapesForAssets as createElementsForAssets,
   getIndices,
   isPageId,
-  isShapeId,
+  isShapeId as isElementId,
   useEditor,
   toRichText,
   type Editor,
-  type TLDrawShapeSegment,
+  type TLDrawShapeSegment as TLDrawElementSegment,
   type TLParentId,
-  type TLShapeId,
-  type TLShapePartial,
+  type TLShape as TLElement,
+  type TLShapeId as TLElementId,
+  type TLShapePartial as TLElementPartial,
 } from "tldraw";
+import { isCanvasJsonString } from "@piet/protocol";
 import type {
   CanvasBounds,
   CanvasActor,
+  CanvasJsonObject,
   CanvasPoint,
   CanvasRequest,
   CanvasScope,
@@ -25,22 +28,23 @@ import type {
   CanvasSnapshot,
   CanvasToolResult,
   CanvasTraceMessage,
-  DeleteShapesResult,
-  MoveShapesResult,
-  PutCanvasShape,
+  DeleteElementsResult,
+  MoveElementsResult,
+  PutCanvasElement,
   PutImageResult,
   PutPathResult,
   PutMermaidResult,
-  PutShapeResult,
+  PutElementResult,
   SetViewResult,
   SkippedArrowBinding,
-  UpdateShapeResult,
+  UpdateElementResult,
 } from "@piet/protocol";
 import {
   captureCanvasStyleProfile,
   isRecord,
   roundCanvasBounds,
-  summarizeShape,
+  serializeCanvasJsonValue,
+  summarizeElement,
   type CanvasStyleProfile,
 } from "./canvasFormat.ts";
 import { detectLints } from "./canvasLints.ts";
@@ -59,8 +63,9 @@ type Props = {
   setCanvasRequestHandler: (handler: CanvasRequestHandler | null) => void;
 };
 
-const DEFAULT_MAX_SHAPES = 200;
-const MAX_SHAPES_LIMIT = 1_000;
+const DEFAULT_MAX_ELEMENTS = 200;
+
+const MAX_ELEMENTS_LIMIT = 1_000;
 
 type CanvasRequestSignal = AbortSignal | undefined;
 
@@ -82,46 +87,56 @@ const unionBounds = (boundsList: CanvasBounds[]): CanvasBounds | undefined => {
   const minY = Math.min(...boundsList.map((bounds) => bounds.y));
   const maxX = Math.max(...boundsList.map((bounds) => bounds.x + bounds.w));
   const maxY = Math.max(...boundsList.map((bounds) => bounds.y + bounds.h));
+
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 };
 
 const normalizeScope = (scope: CanvasScope | undefined): CanvasScope => scope ?? "viewport";
 
-const normalizeMaxShapes = (maxShapes: number | undefined): number => {
-  if (maxShapes === undefined || !Number.isFinite(maxShapes)) return DEFAULT_MAX_SHAPES;
-  return Math.max(1, Math.min(MAX_SHAPES_LIMIT, Math.floor(maxShapes)));
+const normalizeMaxElements = (maxElements: number | undefined): number => {
+  if (maxElements === undefined || !Number.isFinite(maxElements)) return DEFAULT_MAX_ELEMENTS;
+
+  return Math.max(1, Math.min(MAX_ELEMENTS_LIMIT, Math.floor(maxElements)));
 };
 
-const normalizeShapeId = (id: string | undefined): TLShapeId =>
-  createShapeId(id?.startsWith("shape:") ? id.slice("shape:".length) : id);
+const normalizeElementId = (id: string | undefined): TLElementId =>
+  createElementId(id?.startsWith("shape:") ? id.slice("shape:".length) : id);
 
-const withActorMeta = (meta: unknown, actor: CanvasActor): Record<string, unknown> => {
+const withActorMeta = (
+  meta: CanvasJsonObject | TLElement["meta"] | undefined,
+  actor: CanvasActor,
+): CanvasJsonObject => {
   const current = isRecord(meta) ? meta : {};
   const piet = isRecord(current.piet) ? current.piet : {};
+
   return { ...current, piet: { ...piet, actor } };
 };
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 type ArrowBindingSpec = {
-  arrowId: TLShapeId;
-  targetId: TLShapeId;
+  arrowId: TLElementId;
+  targetId: TLElementId;
   terminal: "start" | "end";
 };
 
-const arrowBindingSpecs = (input: PutCanvasShape, arrowId: TLShapeId): ArrowBindingSpec[] => {
+const arrowBindingSpecs = (input: PutCanvasElement, arrowId: TLElementId): ArrowBindingSpec[] => {
   const specs: ArrowBindingSpec[] = [];
-  if (typeof input.startShapeId === "string" && input.startShapeId.trim() !== "") {
-    specs.push({ arrowId, targetId: normalizeShapeId(input.startShapeId), terminal: "start" });
+
+  if (input.startShapeId !== undefined && input.startShapeId.trim() !== "") {
+    specs.push({ arrowId, targetId: normalizeElementId(input.startShapeId), terminal: "start" });
   }
-  if (typeof input.endShapeId === "string" && input.endShapeId.trim() !== "") {
-    specs.push({ arrowId, targetId: normalizeShapeId(input.endShapeId), terminal: "end" });
+
+  if (input.endShapeId !== undefined && input.endShapeId.trim() !== "") {
+    specs.push({ arrowId, targetId: normalizeElementId(input.endShapeId), terminal: "end" });
   }
+
   return specs;
 };
 
 const applyArrowBindings = (editor: Editor, specs: ArrowBindingSpec[]): SkippedArrowBinding[] => {
   const skippedBindings: SkippedArrowBinding[] = [];
+
   const bindings = specs.flatMap((spec) => {
     if (!editor.getShape(spec.targetId)) {
       skippedBindings.push({
@@ -129,8 +144,10 @@ const applyArrowBindings = (editor: Editor, specs: ArrowBindingSpec[]): SkippedA
         terminal: spec.terminal,
         reason: `target shape ${spec.targetId} does not exist on the page; create it first`,
       });
+
       return [];
     }
+
     return [
       {
         fromId: spec.arrowId,
@@ -146,26 +163,29 @@ const applyArrowBindings = (editor: Editor, specs: ArrowBindingSpec[]): SkippedA
       },
     ];
   });
+
   if (bindings.length > 0) editor.createBindings(bindings);
+
   return skippedBindings;
 };
 
 const requestStyle = (editor: Editor, request: CanvasRequest): CanvasStyleProfile => {
   const captured = captureCanvasStyleProfile(editor);
-  for (const [key, value] of Object.entries(request.style ?? {})) {
-    if (key === "opacity" && typeof value === "number") captured.opacity = value;
-    if (
-      (key === "color" || key === "size" || key === "dash" || key === "fill" || key === "font") &&
-      typeof value === "string"
-    ) {
-      captured[key] = value;
-    }
+  const requested = request.style;
+
+  if (requested?.opacity !== undefined) captured.opacity = requested.opacity;
+
+  for (const key of ["color", "size", "dash", "fill", "font"] as const) {
+    const value = requested?.[key];
+
+    if (value !== undefined) captured[key] = value;
   }
+
   return captured;
 };
 
-const stylePropsForShape = (type: string, style: CanvasStyleProfile): Record<string, unknown> => {
-  const keys: Record<string, (keyof CanvasStyleProfile)[]> = {
+const stylePropsForElement = (type: string, style: CanvasStyleProfile): CanvasJsonObject => {
+  const keys = {
     geo: ["color", "size", "dash", "fill", "font"],
     text: ["color", "size", "font"],
     note: ["color", "size", "font"],
@@ -173,8 +193,11 @@ const stylePropsForShape = (type: string, style: CanvasStyleProfile): Record<str
     draw: ["color", "size", "dash", "fill"],
     highlight: ["color", "size"],
     line: ["color", "size", "dash"],
-  };
-  return Object.fromEntries((keys[type] ?? []).map((key) => [key, style[key]]));
+  } satisfies Partial<Record<string, readonly (keyof CanvasStyleProfile)[]>>;
+
+  const styleKeys = Object.entries(keys).find(([key]) => key === type)?.[1];
+
+  return Object.fromEntries((styleKeys ?? []).map((key) => [key, style[key]]));
 };
 
 const pagePointInParentSpace = (
@@ -183,19 +206,23 @@ const pagePointInParentSpace = (
   point: { x: number; y: number },
 ): { x: number; y: number } => {
   if (parentId === editor.getCurrentPageId()) return point;
-  if (!isShapeId(parentId)) throw new Error(`canvas parent shape ${parentId} does not exist`);
-  const parentShape = editor.getShape(parentId);
-  if (!parentShape) throw new Error(`canvas parent shape ${parentId} does not exist`);
-  return editor.getShapePageTransform(parentShape).clone().invert().applyToPoint(point);
+
+  if (!isElementId(parentId)) throw new Error(`canvas parent shape ${parentId} does not exist`);
+  const parentElement = editor.getShape(parentId);
+
+  if (!parentElement) throw new Error(`canvas parent shape ${parentId} does not exist`);
+
+  return editor.getShapePageTransform(parentElement).clone().invert().applyToPoint(point);
 };
 
-const pageDeltaToShapePosition = (
+const pageDeltaToElementPosition = (
   editor: Editor,
-  shape: { id: TLShapeId; x: number; y: number },
+  element: { id: TLElementId; x: number; y: number },
   delta: { x: number; y: number },
 ): { x: number; y: number } => {
-  const origin = editor.getShapePageTransform(shape.id).point();
-  return editor.getPointInParentSpace(shape.id, {
+  const origin = editor.getShapePageTransform(element.id).point();
+
+  return editor.getPointInParentSpace(element.id, {
     x: origin.x + delta.x,
     y: origin.y + delta.y,
   });
@@ -203,34 +230,43 @@ const pageDeltaToShapePosition = (
 
 const normalizeParentId = (id: string | undefined, pageId: TLParentId): TLParentId => {
   if (id === undefined) return pageId;
-  return isPageId(id) ? id : normalizeShapeId(id);
+
+  return isPageId(id) ? id : normalizeElementId(id);
 };
 
-const prepareShape = (
+const prepareElement = (
   editor: Editor,
-  input: PutCanvasShape,
+  input: PutCanvasElement,
   viewportCenter: { x: number; y: number },
   actor: CanvasActor,
   style: CanvasStyleProfile,
-): TLShapePartial => {
+): TLElementPartial => {
   const type = input.type.trim();
+
   if (type.length === 0) throw new Error("canvas shape type cannot be empty");
 
-  const props = {
-    ...stylePropsForShape(type, style),
-    ...(isRecord(input.props) ? input.props : {}),
+  const props: CanvasJsonObject = {
+    ...stylePropsForElement(type, style),
+    ...(input.props ?? {}),
   };
-  if (typeof input.text === "string") props.richText = toRichText(input.text);
+
+  if (input.text !== undefined) {
+    props.richText = serializeCanvasJsonValue(toRichText(input.text));
+  }
+
   if (type === "arrow" && props.end === undefined) props.end = { x: 100, y: 0 };
 
   const parentId = normalizeParentId(input.parentId, editor.getCurrentPageId());
+
   const pagePoint = {
     x: input.x ?? viewportCenter.x,
     y: input.y ?? viewportCenter.y,
   };
+
   const localPoint = pagePointInParentSpace(editor, parentId, pagePoint);
-  const shape: Record<string, unknown> = {
-    id: normalizeShapeId(input.id),
+
+  const element: CanvasJsonObject = {
+    id: normalizeElementId(input.id),
     type,
     x: localPoint.x,
     y: localPoint.y,
@@ -239,29 +275,36 @@ const prepareShape = (
     opacity: input.opacity ?? style.opacity,
     meta: withActorMeta(input.meta, actor),
   };
-  if (input.rotation !== undefined) shape.rotation = input.rotation;
+
+  if (input.rotation !== undefined) element.rotation = input.rotation;
+
   // SAFETY: tldraw validates dynamic protocol shape types and props in createShapes.
-  return shape as TLShapePartial;
+  return element as TLElementPartial;
 };
 
 const encodeStrokeSegment = (
   points: CanvasPoint[],
   toLocalPoint: (point: CanvasPoint) => { x: number; y: number },
-): TLDrawShapeSegment => {
+): TLDrawElementSegment => {
   const hasPressure = points.some((point) => point.pressure !== undefined);
   const dim = hasPressure ? 3 : 2;
+
   const localPoints = points.map((point) => ({
     ...toLocalPoint(point),
     z: point.pressure ?? 0.5,
   }));
+
   return { type: "free", path: b64Vecs.encodePoints(localPoints, dim), dim };
 };
 
 const imageFileName = (src: string, requested: string | undefined): string => {
   if (requested?.trim()) return requested.trim();
+
   if (src.startsWith("data:")) return "piet-image";
+
   try {
     const name = new URL(src).pathname.split("/").filter(Boolean).at(-1);
+
     return name || "piet-image";
   } catch {
     return "piet-image";
@@ -270,6 +313,7 @@ const imageFileName = (src: string, requested: string | undefined): string => {
 
 const hasDistinctPoints = (points: CanvasPoint[]): boolean => {
   const first = points[0];
+
   return first !== undefined && points.some((point) => point.x !== first.x || point.y !== first.y);
 };
 
@@ -279,9 +323,12 @@ const checkRequestActive = (
   signal: CanvasRequestSignal,
 ): void => {
   if (signal?.aborted) throw new Error(`canvas request ${request.requestId} was canceled`);
+
   if (!Number.isFinite(request.deadlineAt)) throw new Error("canvas request deadlineAt is invalid");
+
   if (request.deadlineAt <= Date.now())
     throw new Error(`canvas request ${request.requestId} deadline expired`);
+
   if (editor.getCurrentPageId() !== request.pageId) {
     throw new Error(
       `canvas request ${request.requestId} targets page ${request.pageId}, but the live page is ${editor.getCurrentPageId()}`,
@@ -289,15 +336,18 @@ const checkRequestActive = (
   }
 };
 
-const expectedShapeId = (id: string): TLShapeId => normalizeShapeId(id);
+const expectedElementId = (id: string): TLElementId => normalizeElementId(id);
 
-const checkExpectedShapes = (editor: Editor, request: CanvasRequest): void => {
+const checkExpectedElements = (editor: Editor, request: CanvasRequest): void => {
   const expected = request.expectedShapes;
+
   if (!expected) return;
+
   for (const [rawId, fingerprint] of Object.entries(expected)) {
-    const id = expectedShapeId(rawId);
-    const shape = editor.getShape(id);
-    if (!shape || JSON.stringify(shape) !== fingerprint) {
+    const id = expectedElementId(rawId);
+    const element = editor.getShape(id);
+
+    if (!element || JSON.stringify(element) !== fingerprint) {
       throw new Error(
         `canvas request ${request.requestId} conflict on shape ${id}; refresh with get_canvas`,
       );
@@ -305,8 +355,9 @@ const checkExpectedShapes = (editor: Editor, request: CanvasRequest): void => {
   }
 };
 
-const ensureUnlocked = (editor: Editor, ids: TLShapeId[]): void => {
-  const affected = new Set<TLShapeId>(ids);
+const ensureUnlocked = (editor: Editor, ids: TLElementId[]): void => {
+  const affected = new Set<TLElementId>(ids);
+
   const visitChildren = (parentId: TLParentId): void => {
     for (const childId of editor.getSortedChildIdsForParent(parentId)) {
       if (affected.has(childId)) continue;
@@ -314,8 +365,10 @@ const ensureUnlocked = (editor: Editor, ids: TLShapeId[]): void => {
       visitChildren(childId);
     }
   };
+
   ids.forEach(visitChildren);
   const locked = [...affected].find((id) => editor.isShapeOrAncestorLocked(id));
+
   if (locked) throw new Error(`canvas shape ${locked} is locked; no shapes were changed`);
 };
 
@@ -325,6 +378,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
   useEffect(() => {
     const traceCapture = createCanvasTraceCapture(liveEditor);
     const traceEmitters = new Map<string, (message: CanvasTraceMessage) => void>();
+
     const captureTrace = (request: CanvasRequest, phase: CanvasTraceMessage["phase"]): void => {
       try {
         traceCapture.capture(request, phase, traceEmitters.get(request.requestId));
@@ -332,30 +386,37 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         /* Debug capture cannot prevent a document commit. */
       }
     };
+
     const lintsFor = (
-      shapeIds: TLShapeId[],
+      elementIds: TLElementId[],
       targetEditor = liveEditor,
     ): { lints?: CanvasSnapshot["lints"] } => {
-      const lints = detectLints(targetEditor, shapeIds);
+      const lints = detectLints(targetEditor, elementIds);
+
       return lints.length > 0 ? { lints } : {};
     };
 
     const renderCanvasImage = async (
       scope: CanvasScope,
-      shapeIds: TLShapeId[],
+      elementIds: TLElementId[],
       viewport: CanvasBounds,
       boundsList: CanvasBounds[],
     ): Promise<CanvasSnapshotImage | undefined> => {
       const editor = liveEditor;
-      if (shapeIds.length === 0) return undefined;
+
+      if (elementIds.length === 0) return undefined;
       const bounds = scope === "viewport" ? viewport : unionBounds(boundsList);
+
       if (!bounds) return undefined;
       await editor.fonts.loadRequiredFontsForCurrentPage(editor.options.maxFontsToLoadBeforeRender);
+
       const imageOptions = {
         ...canvasSnapshotImageOptions(bounds, scope === "viewport" ? 0 : 16),
         bounds: boundsToBox(bounds),
       };
-      const image = await editor.toImage(shapeIds, imageOptions);
+
+      const image = await editor.toImage(elementIds, imageOptions);
+
       return { mimeType: "image/png", data: await canvasSnapshotImageBase64(image.blob), bounds };
     };
 
@@ -365,52 +426,68 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     ): Promise<CanvasSnapshot> => {
       const editor = liveEditor;
       const scope = normalizeScope(request.params.scope);
-      const maxShapes = normalizeMaxShapes(request.params.maxShapes);
+      const maxElements = normalizeMaxElements(request.params.maxShapes);
       const viewport = editor.getViewportPageBounds();
       const pageBounds = editor.getCurrentPageBounds();
       const page = editor.getCurrentPage();
-      const selectedShapeIds = editor.getSelectedShapeIds();
-      const sourceShapes =
+      const selectedElementIds = editor.getSelectedShapeIds();
+
+      const sourceElements =
         scope === "selection" ? editor.getSelectedShapes() : editor.getCurrentPageShapesSorted();
-      const shapesWithBounds = sourceShapes
-        .map((shape) => ({ shape, bounds: editor.getShapePageBounds(shape) }))
+
+      const elementsWithBounds = sourceElements
+        .map((element) => ({ shape: element, bounds: editor.getShapePageBounds(element) }))
         .filter(
           ({ bounds }) => scope !== "viewport" || (bounds ? bounds.collides(viewport) : false),
         );
-      const returnedShapesWithBounds = shapesWithBounds.slice(0, maxShapes);
-      const returnedBounds = returnedShapesWithBounds
+
+      const returnedElementsWithBounds = elementsWithBounds.slice(0, maxElements);
+
+      const returnedBounds = returnedElementsWithBounds
         .map(({ bounds }) => boundsToJson(bounds))
         .filter((bounds): bounds is CanvasBounds => bounds !== undefined);
-      const returnedShapeIds = returnedShapesWithBounds.map(({ shape }) => shape.id);
-      const shapes = returnedShapesWithBounds.map(({ shape }) => summarizeShape(editor, shape));
+
+      const returnedElementIds = returnedElementsWithBounds.map(({ shape: element }) => element.id);
+
+      const elements = returnedElementsWithBounds.map(({ shape: element }) =>
+        summarizeElement(editor, element),
+      );
+
       const image =
         request.params.includeImage === false
           ? undefined
           : await renderCanvasImage(
               scope,
-              returnedShapeIds,
+              returnedElementIds,
               boundsToJson(viewport)!,
               returnedBounds,
             );
+
       checkRequestActive(editor, request, signal);
+
       if (editor.getCurrentPageId() !== page.id) {
         throw new Error(`canvas request ${request.requestId} page changed while reading`);
       }
-      return {
+
+      const snapshot: CanvasSnapshot = {
         scope,
         page: { id: page.id, name: page.name },
         zoom: round2(editor.getZoomLevel()),
         viewport: roundCanvasBounds(viewport),
-        ...(pageBounds ? { pageBounds: roundCanvasBounds(pageBounds) } : {}),
-        selectedShapeIds,
+        selectedShapeIds: selectedElementIds,
         style: captureCanvasStyleProfile(editor),
-        shapeCount: shapesWithBounds.length,
-        returnedShapeCount: shapes.length,
-        truncated: shapesWithBounds.length > shapes.length,
-        shapes,
-        ...lintsFor(returnedShapeIds),
-        ...(image ? { image } : {}),
+        shapeCount: elementsWithBounds.length,
+        returnedShapeCount: elements.length,
+        truncated: elementsWithBounds.length > elements.length,
+        shapes: elements,
+        ...lintsFor(returnedElementIds),
       };
+
+      if (pageBounds) snapshot.pageBounds = roundCanvasBounds(pageBounds);
+
+      if (image) snapshot.image = image;
+
+      return snapshot;
     };
 
     async function stageDocument<T>(
@@ -420,126 +497,161 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     ): Promise<T> {
       const editor = liveEditor;
       checkRequestActive(editor, request, signal);
-      checkExpectedShapes(editor, request);
+      checkExpectedElements(editor, request);
       const staging = createCanvasStagingEditor(editor);
+
       try {
         const value = await prepare(staging.editor);
         checkRequestActive(editor, request, signal);
-        checkExpectedShapes(editor, request);
+        checkExpectedElements(editor, request);
         const changes = collectCanvasStagedChanges(staging.editor, staging.before);
+
         for (const record of changes.records) {
           const before = staging.before[record.id];
           const current = editor.store.get(record.id);
+
           if (JSON.stringify(before) !== JSON.stringify(current)) {
             throw new Error(
               `canvas request ${request.requestId} conflict while preparing document`,
             );
           }
         }
+
         for (const id of changes.removedRecordIds) {
           const before = staging.before[id];
           const current = editor.store.get(id);
+
           if (JSON.stringify(before) !== JSON.stringify(current)) {
             throw new Error(
               `canvas request ${request.requestId} conflict while preparing document`,
             );
           }
         }
+
         checkRequestActive(editor, request, signal);
         captureTrace(request, "before");
         checkRequestActive(editor, request, signal);
         commitCanvasStagedChanges(editor, changes);
         captureTrace(request, "after");
+
         return value;
       } finally {
         disposeCanvasStagingEditor(staging);
       }
     }
 
-    const createCanvasShapeBatch = (
+    type CanvasElementBatch = {
+      readonly ids: TLElementId[];
+      readonly skippedBindings: SkippedArrowBinding[];
+    };
+
+    const createCanvasElementBatch = (
       editor: Editor,
-      shapes: PutCanvasShape[],
+      elements: PutCanvasElement[],
       actor: CanvasActor,
       style: CanvasStyleProfile,
-    ): { ids: TLShapeId[]; skippedBindings: SkippedArrowBinding[] } => {
+    ): CanvasElementBatch => {
       const viewportCenter = editor.getViewportPageBounds().center;
-      const inputs = shapes.map((shape) => ({ ...shape, id: normalizeShapeId(shape.id) }));
-      const ids = inputs.map((shape) => shape.id);
+
+      const inputs = elements.map((element) => ({
+        ...element,
+        id: normalizeElementId(element.id),
+      }));
+
+      const ids = inputs.map((element) => element.id);
+
       if (new Set(ids).size !== ids.length)
         throw new Error("canvas batch contains duplicate shape ids");
       const existingId = ids.find((id) => editor.getShape(id));
+
       if (existingId) throw new Error(`shape ${existingId} already exists`);
       let remaining = inputs;
+
       while (remaining.length > 0) {
         const ready = remaining.filter(
-          (shape) =>
-            !shape.parentId ||
-            shape.parentId === editor.getCurrentPageId() ||
-            editor.getShape(normalizeShapeId(shape.parentId)),
+          (element) =>
+            !element.parentId ||
+            element.parentId === editor.getCurrentPageId() ||
+            editor.getShape(normalizeElementId(element.parentId)),
         );
+
         if (ready.length === 0)
           throw new Error("canvas batch has missing or cyclic parent references");
         editor.createShapes(
-          ready.map((shape) => prepareShape(editor, shape, viewportCenter, actor, style)),
+          ready.map((element) => prepareElement(editor, element, viewportCenter, actor, style)),
         );
-        const created = new Set(ready.map((shape) => shape.id));
-        remaining = remaining.filter((shape) => !created.has(shape.id));
+        const created = new Set(ready.map((element) => element.id));
+        remaining = remaining.filter((element) => !created.has(element.id));
       }
+
       if (ids.some((id) => !editor.getShape(id)))
         throw new Error("canvas shape was rejected by tldraw");
-      const skippedBindings = inputs.flatMap((shape) =>
-        shape.type === "arrow"
-          ? applyArrowBindings(editor, arrowBindingSpecs(shape, shape.id))
+
+      const skippedBindings = inputs.flatMap((element) =>
+        element.type === "arrow"
+          ? applyArrowBindings(editor, arrowBindingSpecs(element, element.id))
           : [],
       );
+
       return { ids, skippedBindings };
     };
 
-    const putShape = (
+    const putElement = (
       request: Extract<CanvasRequest, { action: "put_shape" }>,
       editor: Editor,
-    ): PutShapeResult => {
-      const { ids, skippedBindings } = createCanvasShapeBatch(
+    ): PutElementResult => {
+      const { ids, skippedBindings } = createCanvasElementBatch(
         editor,
         [request.params.shape],
         request.actor,
         requestStyle(editor, request),
       );
+
       const id = ids[0];
+
       if (!id) throw new Error("canvas shape creation returned no identity");
       const page = editor.getCurrentPage();
-      return {
+
+      const result: PutElementResult = {
         createdShapeId: id,
         page: { id: page.id, name: page.name },
-        ...(skippedBindings.length > 0 ? { skippedBindings } : {}),
         ...lintsFor([id], editor),
       };
+
+      if (skippedBindings.length > 0) result.skippedBindings = skippedBindings;
+
+      return result;
     };
 
-    const putShapes = (
+    const putElements = (
       request: Extract<CanvasRequest, { action: "put_shapes" }>,
       editor: Editor,
     ): PutMermaidResult => {
-      const { ids, skippedBindings } = createCanvasShapeBatch(
+      const { ids, skippedBindings } = createCanvasElementBatch(
         editor,
         request.params.shapes,
         request.actor,
         requestStyle(editor, request),
       );
+
       if (skippedBindings.length > 0)
         throw new Error("canvas batch has missing arrow targets; no shapes were committed");
+
       const bounds = unionBounds(
         ids
           .map((id) => editor.getShapePageBounds(id))
           .filter((value): value is NonNullable<typeof value> => value !== undefined)
           .map(roundCanvasBounds),
       );
-      return {
+
+      const result: PutMermaidResult = {
         createdShapeIds: ids,
-        ...(bounds ? { bounds } : {}),
-        ...(skippedBindings.length > 0 ? { skippedBindings } : {}),
         ...lintsFor(ids, editor),
       };
+
+      if (bounds) result.bounds = bounds;
+
+      return result;
     };
 
     const putMermaid = async (
@@ -547,7 +659,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       signal: CanvasRequestSignal,
     ): Promise<PutMermaidResult> => {
       const editor = liveEditor;
-      let ids: TLShapeId[] = [];
+      let ids: TLElementId[] = [];
       let fallback: "svg" | undefined;
       const { source, x, y } = request.params;
       const style = requestStyle(editor, request);
@@ -556,42 +668,53 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         const result = await putMermaidDiagram(stagingEditor, source, position);
         ids = result.createdShapeIds;
         fallback = result.fallback;
+
         if (ids.length > 0) {
+          // SAFETY: every partial preserves the fetched shape type and uses tldraw style values.
           stagingEditor.updateShapes(
             ids.map((id) => {
-              const shape = stagingEditor.getShape(id);
-              if (!shape) throw new Error(`canvas Mermaid shape ${id} is missing`);
-              const defaults = stagingEditor.getShapeUtil(shape).getDefaultProps();
-              const raw = isRecord(shape.props) ? shape.props : {};
+              const element = stagingEditor.getShape(id);
+
+              if (!element) throw new Error(`canvas Mermaid shape ${id} is missing`);
+              const defaults = stagingEditor.getShapeUtil(element).getDefaultProps();
+              const raw = isRecord(element.props) ? element.props : {};
               const defaultProps = isRecord(defaults) ? defaults : {};
+
               const inherited = Object.fromEntries(
-                Object.entries(stylePropsForShape(shape.type, style)).filter(
+                Object.entries(stylePropsForElement(element.type, style)).filter(
                   ([key]) => raw[key] === undefined || raw[key] === defaultProps[key],
                 ),
               );
+
               return {
                 id,
-                type: shape.type,
+                type: element.type,
                 props: inherited,
-                opacity: shape.opacity === 1 ? style.opacity : shape.opacity,
-                meta: withActorMeta(shape.meta, request.actor),
+                opacity: element.opacity === 1 ? style.opacity : element.opacity,
+                meta: withActorMeta(element.meta, request.actor),
               };
-            }) as TLShapePartial[],
+            }) as TLElementPartial[],
           );
         }
       });
+
       const bounds = unionBounds(
         ids
           .map((id) => editor.getShapePageBounds(id))
           .filter((value): value is NonNullable<typeof value> => value !== undefined)
           .map(roundCanvasBounds),
       );
-      return {
+
+      const putResult: PutMermaidResult = {
         createdShapeIds: ids,
-        ...(bounds ? { bounds } : {}),
-        ...(fallback ? { fallback } : {}),
         ...lintsFor(ids),
       };
+
+      if (bounds) putResult.bounds = bounds;
+
+      if (fallback) putResult.fallback = fallback;
+
+      return putResult;
     };
 
     const putImage = async (
@@ -599,70 +722,95 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       signal: CanvasRequestSignal,
     ): Promise<PutImageResult> => {
       const { src, name, mimeType, altText, x, y, w, h } = request.params;
+
       if (!src.startsWith("data:image/") && !/^https?:\/\//i.test(src)) {
         throw new Error("image src must be an image data URL or an http(s) URL");
       }
-      let createdShapeId = "";
+
+      let createdElementId = "";
       let createdAssetId: string | undefined;
       await stageDocument(request, signal, async (stagingEditor) => {
         const response = await fetch(src, signal ? { signal } : undefined);
+
         if (!response.ok) {
           throw new Error(`canvas image fetch failed (${response.status} ${response.statusText})`);
         }
+
         const blob = await response.blob();
         const resolvedMimeType = mimeType?.trim() || blob.type;
+
         if (!resolvedMimeType.startsWith("image/")) {
           throw new Error(
             `canvas image MIME type is required; received '${resolvedMimeType || "unknown"}'`,
           );
         }
+
         const file = new File([blob], imageFileName(src, name), { type: resolvedMimeType });
         const asset = await stagingEditor.getAssetForExternalContent({ type: "file", file });
+
         if (!asset)
           throw new Error(`canvas image import does not support MIME type '${resolvedMimeType}'`);
         const before = new Set(stagingEditor.getCurrentPageShapes().map(({ id }) => id));
-        await createShapesForAssets(
+        await createElementsForAssets(
           stagingEditor,
           [asset],
           stagingEditor.getViewportPageBounds().center,
         );
+
         const created = stagingEditor
           .getCurrentPageShapes()
-          .filter((shape) => !before.has(shape.id) && shape.type === "image");
+          .filter((element) => !before.has(element.id) && element.type === "image");
+
         if (created.length !== 1) {
           throw new Error(`canvas image import created ${created.length} shapes; expected one`);
         }
-        const shape = created[0]!;
-        createdShapeId = shape.id;
-        const bounds = stagingEditor.getShapePageBounds(shape);
-        const partial: Record<string, unknown> = {
-          id: shape.id,
-          type: shape.type,
-          meta: withActorMeta(shape.meta, request.actor),
+
+        const element = created[0]!;
+        createdElementId = element.id;
+        const bounds = stagingEditor.getShapePageBounds(element);
+
+        const partial: CanvasJsonObject = {
+          id: element.id,
+          type: element.type,
+          meta: withActorMeta(element.meta, request.actor),
         };
+
         if (x !== undefined || y !== undefined) {
           if (!bounds) throw new Error("canvas image import produced no bounds");
           const target = { x: x ?? bounds.x, y: y ?? bounds.y };
-          const position = pageDeltaToShapePosition(stagingEditor, shape, {
+
+          const position = pageDeltaToElementPosition(stagingEditor, element, {
             x: target.x - bounds.x,
             y: target.y - bounds.y,
           });
+
           partial.x = position.x;
           partial.y = position.y;
         }
+
         if (altText !== undefined || w !== undefined || h !== undefined) {
-          partial.props = {
-            ...(altText !== undefined ? { altText } : {}),
-            ...(w !== undefined ? { w } : {}),
-            ...(h !== undefined ? { h } : {}),
-          };
+          const imageProps: CanvasJsonObject = {};
+
+          if (altText !== undefined) imageProps.altText = altText;
+
+          if (w !== undefined) imageProps.w = w;
+
+          if (h !== undefined) imageProps.h = h;
+          partial.props = imageProps;
         }
+
         // SAFETY: tldraw validates the image partial at this dynamic shape boundary.
-        stagingEditor.updateShapes([partial as TLShapePartial]);
-        const assetId = (shape.props as { assetId?: unknown }).assetId;
-        if (typeof assetId === "string") createdAssetId = assetId;
+        stagingEditor.updateShapes([partial as TLElementPartial]);
+        const assetId = isRecord(element.props) ? element.props.assetId : undefined;
+
+        if (isCanvasJsonString(assetId)) createdAssetId = assetId;
       });
-      return { createdShapeId, ...(createdAssetId ? { createdAssetId } : {}) };
+
+      const result: PutImageResult = { createdShapeId: createdElementId };
+
+      if (createdAssetId) result.createdAssetId = createdAssetId;
+
+      return result;
     };
 
     const putStroke = (
@@ -671,51 +819,68 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
     ): PutPathResult => {
       const type = request.action === "put_draw" ? "draw" : "highlight";
       const { points } = request.params;
+
       if (points.length < 2) throw new Error(`${type} requires at least two points`);
+
       if (!hasDistinctPoints(points)) throw new Error(`${type} requires two distinct points`);
-      const id = normalizeShapeId(request.params.id);
+      const id = normalizeElementId(request.params.id);
       const existing = editor.getShape(id);
+
       if (existing?.isLocked)
         throw new Error(`canvas shape ${id} is locked; no shapes were changed`);
+
       if (existing && existing.type !== type)
         throw new Error(`shape ${id} is '${existing.type}', not '${type}'`);
+
       const style = {
         ...captureCanvasStyleProfile(editor),
         ...requestStyle(editor, request),
         ...request.params,
       };
+
       if (existing) {
-        const props = existing.props as { segments: TLDrawShapeSegment[] };
+        // SAFETY: the preceding type check establishes that this is a draw or highlight shape.
+        const props = existing.props as { segments: TLDrawElementSegment[] };
+
         const segment = encodeStrokeSegment(points, (point) =>
           editor.getPointInShapeSpace(existing, { x: point.x, y: point.y }),
         );
-        editor.updateShapes([
-          {
-            id,
-            type,
-            props: { segments: [...props.segments, segment] },
-            meta: withActorMeta(existing.meta, request.actor),
-          } as TLShapePartial,
-        ]);
+
+        // SAFETY: the partial preserves the existing draw or highlight type and segment props.
+        const partial = {
+          id,
+          type,
+          props: { segments: [...props.segments, segment] },
+          meta: withActorMeta(existing.meta, request.actor),
+        } as TLElementPartial;
+
+        editor.updateShapes([partial]);
+
         return { shapeId: id, pointCount: points.length, appended: true };
       }
+
       const strokeOrigin = { x: points[0]!.x, y: points[0]!.y };
+
       const segment = encodeStrokeSegment(points, (point) => ({
         x: point.x - strokeOrigin.x,
         y: point.y - strokeOrigin.y,
       }));
-      const props: Record<string, unknown> = {
-        segments: [segment],
+
+      const props: CanvasJsonObject = {
+        segments: serializeCanvasJsonValue([segment]),
         isComplete: true,
         isPen: points.some((point) => point.pressure !== undefined),
         color: style.color,
         size: style.size,
       };
+
       if (type === "draw") {
         props.dash = style.dash;
         props.fill = style.fill;
         props.isClosed = request.params.isClosed ?? false;
       }
+
+      // SAFETY: props are assembled for the draw or highlight type selected above.
       editor.createShape({
         id,
         type,
@@ -723,8 +888,10 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         y: strokeOrigin.y,
         props,
         meta: withActorMeta({}, request.actor),
-      } as TLShapePartial);
+      } as TLElementPartial);
+
       if (!editor.getShape(id)) throw new Error(`${type} shape was rejected by tldraw`);
+
       return { shapeId: id, pointCount: points.length, appended: false };
     };
 
@@ -733,13 +900,17 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       editor: Editor,
     ): PutPathResult => {
       const { points } = request.params;
+
       if (points.length < 2) throw new Error("line requires at least two points");
+
       if (!hasDistinctPoints(points)) throw new Error("line requires two distinct points");
-      const id = normalizeShapeId(request.params.id);
+      const id = normalizeElementId(request.params.id);
+
       if (editor.getShape(id)) throw new Error(`shape ${id} already exists`);
       const style = { ...requestStyle(editor, request), ...request.params };
       const lineOrigin = { x: points[0]!.x, y: points[0]!.y };
       const indices = getIndices(points.length - 1);
+
       const linePoints = Object.fromEntries(
         points.map((point, index) => [
           `p${index}`,
@@ -751,7 +922,9 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           },
         ]),
       );
-      editor.createShape({
+
+      // SAFETY: the line partial uses tldraw line point and style representations.
+      const partial = {
         id,
         type: "line",
         x: lineOrigin.x,
@@ -764,18 +937,23 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           spline: style.spline ?? "line",
         },
         meta: withActorMeta({}, request.actor),
-      } as TLShapePartial);
+      } as TLElementPartial;
+
+      editor.createShape(partial);
+
       if (!editor.getShape(id)) throw new Error("line shape was rejected by tldraw");
+
       return { shapeId: id, pointCount: points.length, appended: false };
     };
 
-    const updateShape = (
+    const updateElement = (
       request: Extract<CanvasRequest, { action: "update_shape" }>,
       editor: Editor,
-    ): UpdateShapeResult => {
+    ): UpdateElementResult => {
       const input = request.params.shape;
-      const id = normalizeShapeId(input.id);
+      const id = normalizeElementId(input.id);
       const existing = editor.getShape(id);
+
       if (!existing)
         throw new Error(`shape ${id} does not exist; use get_canvas to list current shape ids`);
       ensureUnlocked(editor, [id]);
@@ -784,116 +962,153 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         if (input.parentId !== undefined && input.parentId !== existing.parentId) {
           editor.reparentShapes([id], normalizeParentId(input.parentId, editor.getCurrentPageId()));
         }
+
         const current = editor.getShape(id)!;
-        const props = isRecord(input.props) ? { ...input.props } : {};
-        if (typeof input.text === "string") props.richText = toRichText(input.text);
-        const partial: Record<string, unknown> = { id, type: current.type };
+        const props: CanvasJsonObject = { ...(input.props ?? {}) };
+
+        if (input.text !== undefined) {
+          props.richText = serializeCanvasJsonValue(toRichText(input.text));
+        }
+
+        const partial: CanvasJsonObject = { id, type: current.type };
+
         if (input.x !== undefined || input.y !== undefined) {
           const bounds = editor.getShapePageBounds(current);
           const currentX = bounds?.x ?? current.x;
           const currentY = bounds?.y ?? current.y;
-          const position = pageDeltaToShapePosition(editor, current, {
+
+          const position = pageDeltaToElementPosition(editor, current, {
             x: (input.x ?? currentX) - currentX,
             y: (input.y ?? currentY) - currentY,
           });
+
           partial.x = position.x;
           partial.y = position.y;
         }
+
         if (input.rotation !== undefined) partial.rotation = input.rotation;
+
         if (input.opacity !== undefined) partial.opacity = input.opacity;
         partial.meta = withActorMeta({ ...current.meta, ...(input.meta ?? {}) }, request.actor);
+
         if (Object.keys(props).length > 0) partial.props = props;
         // SAFETY: tldraw validates the dynamic protocol update at this SDK boundary.
-        editor.updateShapes([partial as TLShapePartial]);
+        editor.updateShapes([partial as TLElementPartial]);
+
         if (current.type === "arrow") {
           const specs = arrowBindingSpecs(input, id);
+
           if (specs.length > 0) {
             const stale = editor
               .getBindingsFromShape(current, "arrow")
               .filter((binding) => specs.some((spec) => spec.terminal === binding.props.terminal));
+
             if (stale.length > 0)
               editor.deleteBindings(stale.map(({ id: bindingId }) => bindingId));
             skippedBindings = applyArrowBindings(editor, specs);
           }
         }
       });
-      return {
+
+      const result: UpdateElementResult = {
         updatedShapeId: id,
-        ...(skippedBindings.length > 0 ? { skippedBindings } : {}),
         ...lintsFor([id], editor),
       };
+
+      if (skippedBindings.length > 0) result.skippedBindings = skippedBindings;
+
+      return result;
     };
 
-    const deleteShapes = (
+    const deleteElements = (
       request: Extract<CanvasRequest, { action: "delete_shapes" }>,
       editor: Editor,
-    ): DeleteShapesResult => {
-      const ids = request.params.ids.map(normalizeShapeId);
+    ): DeleteElementsResult => {
+      const ids = request.params.ids.map(normalizeElementId);
       const present = ids.filter((id) => editor.getShape(id) !== undefined);
       const missing = ids.filter((id) => editor.getShape(id) === undefined);
       ensureUnlocked(editor, present);
+
       if (present.length > 0) editor.deleteShapes(present);
-      return { deletedShapeIds: present, ...(missing.length > 0 ? { missingIds: missing } : {}) };
+
+      const result: DeleteElementsResult = { deletedShapeIds: present };
+
+      if (missing.length > 0) result.missingIds = missing;
+
+      return result;
     };
 
-    const moveShapes = (
+    const moveElements = (
       request: Extract<CanvasRequest, { action: "move_shapes" }>,
       editor: Editor,
-    ): MoveShapesResult => {
-      const moved: TLShapeId[] = [];
-      const missing: TLShapeId[] = [];
-      const partials: TLShapePartial[] = [];
+    ): MoveElementsResult => {
+      const moved: TLElementId[] = [];
+      const missing: TLElementId[] = [];
+      const partials: TLElementPartial[] = [];
+
       for (const move of request.params.moves) {
-        const id = normalizeShapeId(move.id);
-        const shape = editor.getShape(id);
-        if (!shape) {
+        const id = normalizeElementId(move.id);
+        const element = editor.getShape(id);
+
+        if (!element) {
           missing.push(id);
           continue;
         }
+
         ensureUnlocked(editor, [id]);
-        const bounds = editor.getShapePageBounds(shape);
-        const currentX = bounds?.x ?? shape.x;
-        const currentY = bounds?.y ?? shape.y;
+        const bounds = editor.getShapePageBounds(element);
+        const currentX = bounds?.x ?? element.x;
+        const currentY = bounds?.y ?? element.y;
+
         const delta =
           move.dx !== undefined || move.dy !== undefined
             ? { x: move.dx ?? 0, y: move.dy ?? 0 }
             : { x: (move.x ?? currentX) - currentX, y: (move.y ?? currentY) - currentY };
-        const position = pageDeltaToShapePosition(editor, shape, delta);
+
+        const position = pageDeltaToElementPosition(editor, element, delta);
         partials.push({
           id,
-          type: shape.type,
+          type: element.type,
           x: position.x,
           y: position.y,
           // SAFETY: the protocol metadata is validated before this dynamic shape update.
-          meta: withActorMeta(shape.meta, request.actor) as TLShapePartial["meta"],
+          meta: withActorMeta(element.meta, request.actor) as TLElementPartial["meta"],
         });
         moved.push(id);
       }
+
       if (partials.length > 0) editor.updateShapes(partials);
-      return {
+
+      const result: MoveElementsResult = {
         movedShapeIds: moved,
-        ...(missing.length > 0 ? { missingIds: missing } : {}),
         ...lintsFor(moved, editor),
       };
+
+      if (missing.length > 0) result.missingIds = missing;
+
+      return result;
     };
 
     const setView = (request: Extract<CanvasRequest, { action: "set_view" }>): SetViewResult => {
       const editor = liveEditor;
-      const { bounds, shapeIds } = request.params;
+      const { bounds, shapeIds: elementIds } = request.params;
+
       if (bounds) {
         editor.zoomToBounds(boundsToBox(bounds), { inset: 32 });
-      } else if (shapeIds && shapeIds.length > 0) {
+      } else if (elementIds && elementIds.length > 0) {
         const target = unionBounds(
-          shapeIds
-            .map((id) => editor.getShapePageBounds(normalizeShapeId(id)))
+          elementIds
+            .map((id) => editor.getShapePageBounds(normalizeElementId(id)))
             .filter((value): value is NonNullable<typeof value> => value !== undefined)
             .map(roundCanvasBounds),
         );
+
         if (!target) throw new Error("none of the given shapes exist");
         editor.zoomToBounds(boundsToBox(target), { inset: 64 });
       } else {
         editor.zoomToFit();
       }
+
       return {
         viewport: roundCanvasBounds(editor.getViewportPageBounds()),
         zoom: round2(editor.getZoomLevel()),
@@ -908,9 +1123,9 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         case "get_canvas":
           return getCanvas(request, signal);
         case "put_shape":
-          return stageDocument(request, signal, (staging) => putShape(request, staging));
+          return stageDocument(request, signal, (staging) => putElement(request, staging));
         case "put_shapes":
-          return stageDocument(request, signal, (staging) => putShapes(request, staging));
+          return stageDocument(request, signal, (staging) => putElements(request, staging));
         case "put_mermaid":
           return putMermaid(request, signal);
         case "put_image":
@@ -921,17 +1136,19 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         case "put_line":
           return stageDocument(request, signal, (staging) => putLine(request, staging));
         case "update_shape":
-          return stageDocument(request, signal, (staging) => updateShape(request, staging));
+          return stageDocument(request, signal, (staging) => updateElement(request, staging));
         case "delete_shapes":
-          return stageDocument(request, signal, (staging) => deleteShapes(request, staging));
+          return stageDocument(request, signal, (staging) => deleteElements(request, staging));
         case "move_shapes":
-          return stageDocument(request, signal, (staging) => moveShapes(request, staging));
+          return stageDocument(request, signal, (staging) => moveElements(request, staging));
         case "set_view": {
           captureTrace(request, "before");
           const result = setView(request);
           captureTrace(request, "after");
+
           return result;
         }
+
         default:
           throw new Error("canvas action is not supported");
       }
@@ -939,16 +1156,21 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
 
     // Mermaid owns shared parser configuration; other preparation and canvas reads can proceed independently.
     let mermaidQueue = Promise.resolve();
+
     const handler: CanvasRequestHandler = (request, signal, emitTrace) => {
       const run = async (): Promise<CanvasToolResult> => {
         if (emitTrace) traceEmitters.set(request.requestId, emitTrace);
+
         try {
           checkRequestActive(liveEditor, request, signal);
-          checkExpectedShapes(liveEditor, request);
+          checkExpectedElements(liveEditor, request);
+
           if (request.action === "get_canvas" && request.params.includeImage === false) {
             captureTrace(request, "read");
           }
+
           const result = await execute(request, signal);
+
           if (
             request.action === "get_canvas" &&
             request.params.includeImage !== false &&
@@ -957,6 +1179,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           ) {
             captureTrace(request, "read");
           }
+
           return result;
         } catch (error) {
           captureTrace(request, "error");
@@ -965,16 +1188,19 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           traceEmitters.delete(request.requestId);
         }
       };
+
       if (request.action !== "put_mermaid") return run();
       const result = mermaidQueue.then(run, run);
       mermaidQueue = result.then(
         () => undefined,
         () => undefined,
       );
+
       return result;
     };
 
     setCanvasRequestHandler(handler);
+
     return () => {
       setCanvasRequestHandler(null);
       traceCapture.dispose();

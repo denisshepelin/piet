@@ -14,6 +14,7 @@ export const CanvasRequestCards = ({
 }): ReactElement | null => {
   const editor = useEditor();
   const requests = groupCanvasRequests(runs).filter((request) => request.activeRuns.length > 0);
+
   if (requests.length === 0) return null;
 
   const stopUiEvent = (event: SyntheticEvent<HTMLElement>): void => {
@@ -33,6 +34,7 @@ export const CanvasRequestCards = ({
     >
       {requests.map((request) => {
         const latest = [...request.activeRuns].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+
         return (
           <article className="piet-request-card" key={request.promptId} aria-label={request.title}>
             <div className="piet-request-card__heading">

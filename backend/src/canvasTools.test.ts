@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCanvasTools, normalizeShape } from "./canvasTools.js";
-import type { CanvasSnapshot, PromptCanvasContext } from "@piet/protocol";
+import { createCanvasTools, normalizeElement } from "./canvasTools.js";
+import { isCanvasSnapshot, type PromptCanvasContext } from "@piet/protocol";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 test("normalizeShape coerces string boolean props", () => {
   const input = {
@@ -9,9 +10,9 @@ test("normalizeShape coerces string boolean props", () => {
     props: { autoSize: "false", isClosed: "TRUE", w: "720" },
   };
 
-  const { shape, tips } = normalizeShape(input);
+  const { shape: element, tips } = normalizeElement(input);
 
-  assert.deepEqual(shape.props, { autoSize: false, isClosed: true, w: 720 });
+  assert.deepEqual(element.props, { autoSize: false, isClosed: true, w: 720 });
   assert.ok(tips.includes("props.autoSize must be a JSON boolean, not a string; it was coerced."));
   assert.ok(tips.includes("props.isClosed must be a JSON boolean, not a string; it was coerced."));
   assert.deepEqual(input.props, { autoSize: "false", isClosed: "TRUE", w: "720" });
@@ -31,7 +32,9 @@ test("get_selection returns the active turn's captured selection", async () => {
       shapes: [{ id: "shape:original", type: "geo", x: 10, y: 20, w: 100, h: 80 }],
     },
   };
+
   let liveRequests = 0;
+
   const { tools } = createCanvasTools(
     async () => {
       liveRequests += 1;
@@ -39,13 +42,14 @@ test("get_selection returns the active turn's captured selection", async () => {
     },
     () => context,
   );
-  const selection = tools.find(({ name }) => name === "get_selection")!;
-  const execute = selection.execute as unknown as (
-    toolCallId: string,
-    params: { maxShapes?: number },
-  ) => Promise<{ details: CanvasSnapshot }>;
 
-  const result = await execute("call-1", {});
+  const selection = tools.find(({ name }) => name === "get_selection")!;
+
+  // SAFETY: get_selection does not read the extension context.
+  const extensionContext = {} as ExtensionContext;
+  const result = await selection.execute("call-1", {}, undefined, undefined, extensionContext);
+
+  assert.ok(isCanvasSnapshot(result.details));
 
   assert.equal(liveRequests, 0);
   assert.deepEqual(result.details.selectedShapeIds, ["shape:original"]);

@@ -1,23 +1,29 @@
 import { createMermaidDiagram, MermaidDiagramError } from "@tldraw/mermaid";
-import { Box, type Editor, type TLShapeId } from "tldraw";
+import { Box, type Editor, type TLShapeId as TLElementId } from "tldraw";
 import type { CanvasBounds } from "@piet/protocol";
 
 export type MermaidPutResult = {
-  createdShapeIds: TLShapeId[];
+  createdShapeIds: TLElementId[];
   bounds?: CanvasBounds; // page-space union of created shapes' bounds, NOT rounded
   fallback?: "svg";
 };
 
-const unionShapeBounds = (editor: Editor, shapeIds: TLShapeId[]): CanvasBounds | undefined => {
-  const boxes = shapeIds
-    .map((id) => editor.getShapePageBounds(id))
-    .filter((box): box is Box => box !== undefined);
-  if (boxes.length === 0) return undefined;
+const unionElementBounds = (
+  editor: Editor,
+  elementIds: TLElementId[],
+): CanvasBounds | undefined => {
+  const boxes = elementIds.flatMap((id) => {
+    const bounds = editor.getShapePageBounds(id);
 
-  const union = boxes.reduce(
-    (acc, box) => (acc ? Box.Expand(acc, box) : box),
-    undefined as Box | undefined,
-  )!;
+    return bounds === undefined ? [] : [bounds];
+  });
+
+  const [firstBox, ...remainingBoxes] = boxes;
+
+  if (firstBox === undefined) return undefined;
+
+  const union = remainingBoxes.reduce((bounds, box) => Box.Expand(bounds, box), firstBox);
+
   return { x: union.x, y: union.y, w: union.w, h: union.h };
 };
 
@@ -29,20 +35,25 @@ export const putMermaidDiagram = async (
   const beforeIds = editor.getCurrentPageShapeIds();
   let fallback: "svg" | undefined;
 
-  try {
-    await createMermaidDiagram(editor, source, {
-      // centerOnPosition defaults to true (center-on-position); false makes
-      // `position` the diagram's top-left, per the blueprint placement math.
-      ...(position ? { blueprintRender: { position, centerOnPosition: false } } : {}),
-      onUnsupportedDiagram: async (svg) => {
-        fallback = "svg";
-        await editor.putExternalContent({
-          type: "svg-text",
-          text: svg,
-          point: position ?? editor.getViewportPageBounds().center,
-        });
-      },
+  const onUnsupportedDiagram = async (svg: string): Promise<void> => {
+    fallback = "svg";
+    await editor.putExternalContent({
+      type: "svg-text",
+      text: svg,
+      point: position ?? editor.getViewportPageBounds().center,
     });
+  };
+
+  try {
+    if (position === undefined) {
+      await createMermaidDiagram(editor, source, { onUnsupportedDiagram });
+    } else {
+      await createMermaidDiagram(editor, source, {
+        // `centerOnPosition: false` makes position the diagram's top-left.
+        blueprintRender: { position, centerOnPosition: false },
+        onUnsupportedDiagram,
+      });
+    }
   } catch (error) {
     if (error instanceof MermaidDiagramError && error.type === "parse") {
       throw new Error(
@@ -50,17 +61,19 @@ export const putMermaidDiagram = async (
         { cause: error },
       );
     }
+
     throw error;
   }
 
   const afterIds = editor.getCurrentPageShapeIds();
-  const createdShapeIds = [...afterIds]
-    .filter((id) => !beforeIds.has(id))
-    .map((id) => id as TLShapeId);
+  const createdElementIds = [...afterIds].filter((id) => !beforeIds.has(id));
 
-  return {
-    createdShapeIds,
-    bounds: unionShapeBounds(editor, createdShapeIds),
-    ...(fallback ? { fallback } : {}),
+  const result: MermaidPutResult = {
+    createdShapeIds: createdElementIds,
+    bounds: unionElementBounds(editor, createdElementIds),
   };
+
+  if (fallback !== undefined) result.fallback = fallback;
+
+  return result;
 };

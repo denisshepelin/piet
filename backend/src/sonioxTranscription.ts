@@ -10,6 +10,7 @@ const sonioxResponseSchema = Type.Object({
   error_code: Type.Optional(Type.Number()),
   error_type: Type.Optional(Type.String()),
 });
+
 const dataSize = (data: RawData): number =>
   Array.isArray(data) ? data.reduce((sum, part) => sum + part.byteLength, 0) : data.byteLength;
 
@@ -20,13 +21,16 @@ export const createSonioxTranscriptionHandler = (options: {
   readonly onOutcome: (outcome: "finished" | "cancelled" | "error") => void;
 }): ((socket: WebSocket) => void) => {
   const active = new Set<WebSocket>();
+
   return (socket) => {
     // A rejected recording may close before the lifecycle handlers are installed.
     socket.on("error", () => undefined);
     const apiKey = options.apiKey;
+
     const send = (event: TranscriptionEvent): void => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
     };
+
     if (!apiKey || active.size >= 4) {
       send({
         type: "error",
@@ -37,17 +41,22 @@ export const createSonioxTranscriptionHandler = (options: {
       });
       socket.close();
       options.onOutcome("error");
+
       return;
     }
+
     active.add(socket);
+
     const upstream = new WebSocket(
       options.endpoint ?? "wss://stt-rt.soniox.com/transcribe-websocket",
       { handshakeTimeout: transcriptionLimits.connectionMs, maxPayload: 1_048_576 },
     );
+
     let phase: "connecting" | "streaming" | "finishing" | "closed" = "connecting";
     let finalText = "";
     let audioBytes = 0;
     let timer: ReturnType<typeof setTimeout>;
+
     const close = (outcome: "finished" | "cancelled" | "error"): void => {
       if (phase === "closed") return;
       phase = "closed";
@@ -57,6 +66,7 @@ export const createSonioxTranscriptionHandler = (options: {
       socket.close();
       options.onOutcome(outcome);
     };
+
     const fail = (
       code: Extract<TranscriptionEvent, { type: "error" }>["code"],
       message: string,
@@ -65,6 +75,7 @@ export const createSonioxTranscriptionHandler = (options: {
       send({ type: "error", code, message });
       close("error");
     };
+
     const deadline = (ms: number): void => {
       clearTimeout(timer);
       timer = setTimeout(
@@ -72,6 +83,7 @@ export const createSonioxTranscriptionHandler = (options: {
         ms,
       );
     };
+
     deadline(transcriptionLimits.connectionMs);
     upstream.on("open", () => {
       if (phase !== "connecting") return;
@@ -88,47 +100,64 @@ export const createSonioxTranscriptionHandler = (options: {
     });
     upstream.on("message", (raw, binary) => {
       if (phase === "closed") return;
+
       if (socket.bufferedAmount > transcriptionLimits.bufferedBytes) {
         fail("limit", "Voice transcription client is not consuming updates.");
+
         return;
       }
+
       let response: unknown;
+
       try {
         response = JSON.parse(raw.toString());
       } catch {
         fail("protocol", "Voice transcription received an invalid provider response.");
+
         return;
       }
+
       if (
         binary ||
         !Check(sonioxResponseSchema, response) ||
         (!response.tokens && !response.error_code && !response.error_type && !response.finished)
       ) {
         fail("protocol", "Voice transcription received an invalid provider response.");
+
         return;
       }
+
       if (response.error_code !== undefined || response.error_type !== undefined) {
         fail(
           "provider",
           "Soniox transcription failed. Check the backend API key, quota, and model access.",
         );
+
         return;
       }
+
       let provisional = "";
+
       for (const token of response.tokens ?? []) {
         if (token.text === "<end>" || token.text === "<fin>") continue;
+
         if (token.is_final) finalText += token.text;
         else provisional += token.text;
       }
+
       if (finalText.length + provisional.length > transcriptionLimits.textCharacters) {
         fail("limit", "Voice transcription exceeded the transcript size limit.");
+
         return;
       }
+
       if (response.finished) {
         if (phase !== "finishing") {
           fail("protocol", "Voice transcription ended before recording was released.");
+
           return;
         }
+
         send({ type: "finished", text: finalText });
         close("finished");
       } else {
@@ -143,22 +172,28 @@ export const createSonioxTranscriptionHandler = (options: {
     );
     socket.on("message", (data, binary) => {
       if (phase === "closed") return;
+
       if (!binary) {
         const command = data.toString();
+
         if (command === "cancel") {
           close("cancelled");
         } else if (command === "finish" && phase === "streaming") {
           phase = "finishing";
           deadline(transcriptionLimits.finalizationMs);
+
           if (audioBytes === 0) {
             send({ type: "finished", text: "" });
             close("finished");
           } else upstream.send("");
         } else fail("protocol", "Voice transcription received an invalid control message.");
+
         return;
       }
+
       const bytes = dataSize(data);
       audioBytes += bytes;
+
       if (phase !== "streaming" || bytes === 0) {
         fail("protocol", "Voice transcription received audio outside a recording.");
       } else if (

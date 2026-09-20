@@ -16,6 +16,7 @@ const root: RunSnapshot = {
   status: "done",
   result: "Research started",
 };
+
 const worker: RunSnapshot = {
   ...root,
   runId: "research:one",
@@ -33,12 +34,14 @@ test("root requests remain active after acknowledgement and group all follow-up 
     kind: "response",
     createdAt: 3,
   };
+
   const second: RunSnapshot = {
     ...worker,
     runId: "question:two",
     promptId: "question:two",
     title: "Another question",
   };
+
   const groups = groupCanvasRequests([worker, root, synthesis, second]);
   assert.equal(groups.length, 2);
   assert.equal(groups[0]?.title, root.title);
@@ -63,6 +66,7 @@ test("terminal requests leave the active list without losing results from histor
 
 test("retry reopens the original request without creating another root card", () => {
   const failed: RunSnapshot = { ...worker, status: "error", error: "Failed" };
+
   const retry: RunSnapshot = {
     ...worker,
     runId: "retry:one",
@@ -70,6 +74,7 @@ test("retry reopens the original request without creating another root card", ()
     status: "queued",
     activity: "Waiting",
   };
+
   const groups = groupCanvasRequests([root, failed, retry]);
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.title, root.title);

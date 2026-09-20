@@ -19,13 +19,16 @@ export const CanvasUiProvider = ({
 
 const useCanvasUiChat = (): AgentChat => {
   const chat = useContext(CanvasUiChatContext);
+
   if (!chat) throw new Error("Canvas UI requires a chat context");
+
   return chat;
 };
 
 /** Stable tldraw front layer for the composer and screen-fixed ongoing requests. */
 export const CanvasInFrontOfTheCanvas = (): ReactElement => {
   const chat = useCanvasUiChat();
+
   return (
     <>
       <CanvasRequestCards runs={chat.runs} actions={chat} />

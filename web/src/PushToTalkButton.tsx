@@ -17,6 +17,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
   const chatRef = useRef(chat);
   chatRef.current = chat;
   const held = useRef<"pointer" | " " | "Enter" | null>(null);
+
   const active =
     state.phase === "connecting" || state.phase === "recording" || state.phase === "finishing";
 
@@ -24,6 +25,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
     held.current = null;
     sessionRef.current?.cancel();
   };
+
   const begin = (input: "pointer" | " " | "Enter"): void => {
     if (
       !chatRef.current.ready ||
@@ -43,6 +45,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
       },
     });
   };
+
   const finish = (input: "pointer" | " " | "Enter"): void => {
     if (held.current !== input) return;
     held.current = null;
@@ -54,6 +57,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
       held.current = null;
       sessionRef.current?.cancel();
     };
+
     const onEscape = (event: KeyboardEvent): void => {
       if (
         event.key !== "Escape" ||
@@ -66,12 +70,15 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
       event.stopPropagation();
       cancelRecording();
     };
+
     const onVisibility = (): void => {
       if (document.hidden) cancelRecording();
     };
+
     window.addEventListener("keydown", onEscape, true);
     window.addEventListener("blur", cancelRecording);
     document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       window.removeEventListener("keydown", onEscape, true);
       window.removeEventListener("blur", cancelRecording);
@@ -112,6 +119,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
           onKeyDown={(event) => {
             if (event.key !== " " && event.key !== "Enter") return;
             event.preventDefault();
+
             if (!event.repeat) begin(event.key);
           }}
           onKeyUp={(event) => {

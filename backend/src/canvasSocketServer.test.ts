@@ -14,7 +14,7 @@ test("canvas socket binds loopback and accepts trusted browser origins", async (
   );
   await once(server, "listening");
   const address = server.address();
-  assert.ok(address && typeof address !== "string");
+  assert.ok(address instanceof Object);
   assert.equal(address.address, "127.0.0.1");
   await Promise.all(
     ["http://localhost:5173", "http://localhost:6000"].map(async (origin) => {
@@ -37,7 +37,7 @@ test("canvas socket rejects foreign and absent origins", async (t) => {
   );
   await once(server, "listening");
   const address = server.address();
-  assert.ok(address && typeof address !== "string");
+  assert.ok(address instanceof Object);
   await Promise.all(
     ["https://untrusted.example", "http://localhost:5173.untrusted.example", undefined].map(
       async (origin) => {

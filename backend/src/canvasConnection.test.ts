@@ -4,9 +4,12 @@ import { CanvasConnection, type RequestCanvas } from "./canvasConnection.js";
 import type { CanvasRequest, PutMermaidResult, ServerMessage } from "@piet/protocol";
 
 const actor = { id: "main:test", name: "Main agent", color: "#2563eb" };
+
 const context = { pageId: "page:a", contextId: "prompt:a" };
+
 const recordingConnection = (timeoutMs = 30_000) => {
   const sent: ServerMessage[] = [];
+
   const connection = new CanvasConnection({
     actor,
     isConnected: () => true,
@@ -15,8 +18,10 @@ const recordingConnection = (timeoutMs = 30_000) => {
       sent.push(message);
     },
   });
+
   const requests = (): CanvasRequest[] =>
     sent.filter((message) => message.type === "canvas_request");
+
   return { connection, sent, requests };
 };
 
@@ -47,12 +52,14 @@ test("matches parallel canvas responses by request id and carries page authority
 
 test("canvas tracing is requested explicitly without changing RPC results", async () => {
   const sent: ServerMessage[] = [];
+
   const connection = new CanvasConnection({
     actor,
     isConnected: () => true,
     send: (message) => sent.push(message),
     captureTrace: true,
   });
+
   const result = connection.request("delete_shapes", { ids: [] }, context);
   const request = sent[0];
   assert.ok(request?.type === "canvas_request");
@@ -82,6 +89,7 @@ test("abort and timeout cancel the browser operation and ignore late responses",
     const promise = connection.request("delete_shapes", { ids: [] }, context, controller.signal);
     const request = requests()[0];
     assert.ok(request);
+
     if (mode === "abort") controller.abort();
     // oxlint-disable-next-line no-await-in-loop
     await assert.rejects(promise, /Canvas request (was cancelled|timed out)/);
@@ -114,6 +122,8 @@ test("wrong action result is rejected even when it is a valid result for another
 const checkCanvasInference = (request: RequestCanvas): Promise<PutMermaidResult> => {
   // @ts-expect-error Delete parameters cannot be used to create a shape.
   void request("put_shape", { ids: [] }, context);
+
   return request("put_shapes", { shapes: [{ type: "geo" }] }, context);
 };
+
 void checkCanvasInference;

@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { canvasShapesForModel } from "./canvasModelContext.js";
+import { canvasElementsForModel } from "./canvasModelContext.js";
 import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -8,20 +8,27 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import type { RequestCanvas } from "./canvasConnection.js";
-import type { CanvasAction, CanvasActionParams, CanvasActionResult } from "@piet/protocol";
-import type {
-  CanvasLint,
-  CanvasScope,
-  CanvasSnapshot,
-  PutCanvasShape,
-  PromptCanvasContext,
+import type { CanvasRequestContext, RequestCanvas } from "./canvasConnection.js";
+import {
+  isCanvasJsonNumber,
+  isCanvasJsonString,
+  type CanvasAction,
+  type CanvasActionParams,
+  type CanvasActionResult,
+  type CanvasJsonObject,
+  type CanvasJsonValue,
+  type CanvasLint,
+  type CanvasScope,
+  type CanvasSnapshot,
+  type PutCanvasElement,
+  type PromptCanvasContext,
 } from "@piet/protocol";
 
-const DEFAULT_MAX_SHAPES = 200;
-const MAX_SHAPES_LIMIT = 1_000;
+const DEFAULT_MAX_ELEMENTS = 200;
 
-const shapeFields = {
+const MAX_ELEMENTS_LIMIT = 1_000;
+
+const elementFields = {
   type: Type.String({
     description:
       "tldraw shape type, e.g. geo, text, note, arrow, frame. Use geo for boxes/circles/diamonds.",
@@ -57,16 +64,16 @@ const shapeFields = {
   ),
 };
 
-const shapeParams = Type.Object({
+const elementParams = Type.Object({
   id: Type.Optional(
     Type.String({ description: "Optional shape id. A shape: prefix is added if missing." }),
   ),
-  ...shapeFields,
+  ...elementFields,
 });
 
-const updateShapeParams = Type.Object({
+const updateElementParams = Type.Object({
   id: Type.String({ description: "Id of the existing shape to update." }),
-  ...shapeFields,
+  ...elementFields,
 });
 
 const boundsParams = Type.Object({
@@ -99,12 +106,15 @@ const VALID_COLOR_VALUES = [
   "red",
   "white",
 ] as const;
+
 const colorParams = Type.Optional(
   Type.Union([...VALID_COLOR_VALUES.map((color) => Type.Literal(color))]),
 );
+
 const sizeParams = Type.Optional(
   Type.Union([Type.Literal("s"), Type.Literal("m"), Type.Literal("l"), Type.Literal("xl")]),
 );
+
 const dashParams = Type.Optional(
   Type.Union([
     Type.Literal("draw"),
@@ -117,70 +127,89 @@ const dashParams = Type.Optional(
 
 const normalizeScope = (scope: string | undefined): CanvasScope => {
   if (scope === "page" || scope === "selection") return scope;
+
   return "viewport";
 };
 
-const normalizeMaxShapes = (maxShapes: number | undefined): number => {
-  if (maxShapes === undefined || !Number.isFinite(maxShapes)) return DEFAULT_MAX_SHAPES;
-  return Math.max(1, Math.min(MAX_SHAPES_LIMIT, Math.floor(maxShapes)));
+const normalizeMaxElements = (maxElements: number | undefined): number => {
+  if (maxElements === undefined || !Number.isFinite(maxElements)) return DEFAULT_MAX_ELEMENTS;
+
+  return Math.max(1, Math.min(MAX_ELEMENTS_LIMIT, Math.floor(maxElements)));
 };
 
 const VALID_COLORS = new Set<string>(VALID_COLOR_VALUES);
+
 const VALID_FILLS = new Set(["none", "semi", "solid", "pattern", "fill"]);
-const NUMERIC_SHAPE_FIELDS = ["x", "y", "rotation", "opacity"] as const;
+
+const NUMERIC_ELEMENT_FIELDS = ["x", "y", "rotation", "opacity"] as const;
+
 const NUMERIC_PROP_KEYS = new Set(["w", "h", "scale", "growY", "bend", "labelPosition"]);
+
 const BOOLEAN_PROP_KEYS = new Set(["autoSize", "isClosed"]);
 
-const asNumber = (value: unknown): number | undefined => {
-  if (typeof value !== "string" || value.trim() === "") return undefined;
+const asNumber = (value: CanvasJsonValue | undefined): number | undefined => {
+  if (!isCanvasJsonString(value) || value.trim() === "") return undefined;
   const num = Number(value);
+
   return Number.isFinite(num) ? num : undefined;
 };
 
-const asBoolean = (value: unknown): boolean | undefined => {
-  if (typeof value !== "string") return undefined;
+const asBoolean = (value: CanvasJsonValue | undefined): boolean | undefined => {
+  if (!isCanvasJsonString(value)) return undefined;
   const normalized = value.trim().toLowerCase();
+
   if (normalized === "true") return true;
+
   if (normalized === "false") return false;
+
   return undefined;
 };
 
 const sizeFromFontSize = (fontSize: number): string => {
   if (fontSize <= 16) return "s";
+
   if (fontSize <= 24) return "m";
+
   if (fontSize <= 36) return "l";
+
   return "xl";
 };
 
 // Accept what the model plausibly emits and normalize it, reporting each fix
 // back as a tip so the model converges on canonical input.
-export const normalizeShape = (
-  input: PutCanvasShape,
-): { shape: PutCanvasShape; tips: string[] } => {
-  const tips = new Set<string>();
-  const shape: Record<string, unknown> = { ...input };
+type NormalizedCanvasElement = {
+  readonly shape: PutCanvasElement;
+  readonly tips: string[];
+};
 
-  for (const field of NUMERIC_SHAPE_FIELDS) {
-    const coerced = asNumber(shape[field]);
+export const normalizeElement = (input: PutCanvasElement): NormalizedCanvasElement => {
+  const tips = new Set<string>();
+  const element: CanvasJsonObject = { ...input };
+
+  for (const field of NUMERIC_ELEMENT_FIELDS) {
+    const coerced = asNumber(element[field]);
+
     if (coerced !== undefined) {
-      shape[field] = coerced;
+      element[field] = coerced;
       tips.add(`Numeric fields must be JSON numbers, not strings; "${field}" was coerced.`);
     }
   }
 
-  const props: Record<string, unknown> = { ...(input.props ?? {}) };
+  const props: CanvasJsonObject = { ...(input.props ?? {}) };
 
-  if (typeof props.text === "string" && shape.text === undefined) {
-    shape.text = props.text;
+  if (isCanvasJsonString(props.text) && element.text === undefined) {
+    element.text = props.text;
     delete props.text;
     tips.add("Text belongs in the top-level text field, not props.text; it was moved.");
   }
 
   if (props.fontSize !== undefined) {
-    const fontSize = typeof props.fontSize === "number" ? props.fontSize : asNumber(props.fontSize);
+    const fontSize = isCanvasJsonNumber(props.fontSize) ? props.fontSize : asNumber(props.fontSize);
+
     if (props.size === undefined && fontSize !== undefined) {
       props.size = sizeFromFontSize(fontSize);
     }
+
     delete props.fontSize;
     tips.add(
       "props.fontSize is not a tldraw prop; use props.size ('s'|'m'|'l'|'xl'). It was mapped for you.",
@@ -189,6 +218,7 @@ export const normalizeShape = (
 
   for (const key of NUMERIC_PROP_KEYS) {
     const coerced = asNumber(props[key]);
+
     if (coerced !== undefined) {
       props[key] = coerced;
       tips.add(`props.${key} must be a JSON number, not a string; it was coerced.`);
@@ -197,6 +227,7 @@ export const normalizeShape = (
 
   for (const key of BOOLEAN_PROP_KEYS) {
     const coerced = asBoolean(props[key]);
+
     if (coerced !== undefined) {
       props[key] = coerced;
       tips.add(`props.${key} must be a JSON boolean, not a string; it was coerced.`);
@@ -205,7 +236,8 @@ export const normalizeShape = (
 
   for (const key of ["color", "labelColor"]) {
     const value = props[key];
-    if (typeof value === "string" && !VALID_COLORS.has(value)) {
+
+    if (isCanvasJsonString(value) && !VALID_COLORS.has(value)) {
       delete props[key];
       tips.add(
         `'${value}' is not a tldraw ${key}; use one of: ${[...VALID_COLORS].join(", ")}. The prop was dropped.`,
@@ -213,24 +245,22 @@ export const normalizeShape = (
     }
   }
 
-  if (typeof props.fill === "string" && !VALID_FILLS.has(props.fill)) {
+  if (isCanvasJsonString(props.fill) && !VALID_FILLS.has(props.fill)) {
     delete props.fill;
     tips.add(
       `'${String(input.props?.fill)}' is not a tldraw fill; use one of: ${[...VALID_FILLS].join(", ")}. The prop was dropped.`,
     );
   }
 
-  if (Object.keys(props).length > 0) shape.props = props;
-  else delete shape.props;
+  if (Object.keys(props).length > 0) element.props = props;
+  else delete element.props;
 
-  return { shape: shape as PutCanvasShape, tips: [...tips] };
+  // SAFETY: shape begins as PutCanvasShape and only receives normalized values for existing fields.
+  return { shape: element as PutCanvasElement, tips: [...tips] };
 };
 
-const redactCanvasImage = (value: unknown): unknown => {
-  if (typeof value !== "object" || value === null || !("image" in value)) return value;
-
-  const snapshot = value as CanvasSnapshot;
-  if (!snapshot.image) return value;
+const redactCanvasImage = (snapshot: CanvasSnapshot): CanvasSnapshot => {
+  if (!snapshot.image) return snapshot;
 
   return {
     ...snapshot,
@@ -243,10 +273,11 @@ const redactCanvasImage = (value: unknown): unknown => {
 
 const stringifyForModel = (value: CanvasSnapshot): string => {
   const json = JSON.stringify(
-    redactCanvasImage({ ...value, shapes: canvasShapesForModel(value.shapes) }),
+    redactCanvasImage({ ...value, shapes: canvasElementsForModel(value.shapes) }),
     null,
     2,
   );
+
   const truncation = truncateHead(json, {
     maxLines: DEFAULT_MAX_LINES,
     maxBytes: DEFAULT_MAX_BYTES,
@@ -278,10 +309,11 @@ const lintLines = (lints: CanvasLint[] | undefined): string[] =>
 
 const capturedSelectionSnapshot = (
   context: PromptCanvasContext,
-  maxShapes: number | undefined,
+  maxElements: number | undefined,
 ): CanvasSnapshot => {
-  const limit = normalizeMaxShapes(maxShapes);
-  const shapes = context.selection.shapes.slice(0, limit);
+  const limit = normalizeMaxElements(maxElements);
+  const elements = context.selection.shapes.slice(0, limit);
+
   return {
     scope: "selection",
     page: context.page,
@@ -289,9 +321,9 @@ const capturedSelectionSnapshot = (
     viewport: context.viewport,
     selectedShapeIds: context.selection.selectedShapeIds,
     shapeCount: context.selection.shapeCount,
-    returnedShapeCount: shapes.length,
-    truncated: context.selection.truncated || shapes.length < context.selection.shapeCount,
-    shapes,
+    returnedShapeCount: elements.length,
+    truncated: context.selection.truncated || elements.length < context.selection.shapeCount,
+    shapes: elements,
   };
 };
 
@@ -300,8 +332,11 @@ const canvasMutationReferences = (
   params: CanvasActionParams<CanvasAction>,
 ): string[] => {
   if (action === "get_canvas" || action === "set_view") return [];
+
   if ("ids" in params) return params.ids;
+
   if ("moves" in params) return params.moves.map((move) => move.id);
+
   if ("shape" in params)
     return [
       params.shape.id,
@@ -309,12 +344,14 @@ const canvasMutationReferences = (
       params.shape.startShapeId,
       params.shape.endShapeId,
     ].filter((id): id is string => id !== undefined);
+
   if ("shapes" in params)
-    return params.shapes.flatMap((shape) =>
-      [shape.parentId, shape.startShapeId, shape.endShapeId].filter(
+    return params.shapes.flatMap((element) =>
+      [element.parentId, element.startShapeId, element.endShapeId].filter(
         (id): id is string => id !== undefined,
       ),
     );
+
   return "id" in params && params.id ? [params.id] : [];
 };
 
@@ -324,50 +361,65 @@ export const createCanvasTools = (
   getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
 ) => {
   const observations = new Map<string, Record<string, string>>();
+
   const requestCanvas = async <A extends CanvasAction>(
     action: A,
     params: CanvasActionParams<A>,
     signal?: AbortSignal,
   ): Promise<CanvasActionResult<A>> => {
     const context = getPromptCanvasContext();
+
     if (!context) throw new Error("Canvas tools require an active request context");
-    let expectedShapes = observations.get(context.capturedAt);
-    if (!expectedShapes) {
-      expectedShapes = Object.fromEntries(
-        context.selection.shapes.flatMap((shape) =>
-          shape.revision ? [[shape.id, shape.revision]] : [],
+    let expectedElements = observations.get(context.capturedAt);
+
+    if (!expectedElements) {
+      expectedElements = Object.fromEntries(
+        context.selection.shapes.flatMap((element) =>
+          element.revision ? [[element.id, element.revision]] : [],
         ),
       );
-      observations.set(context.capturedAt, expectedShapes);
+      observations.set(context.capturedAt, expectedElements);
+
       if (observations.size > 32) {
         const oldest = observations.keys().next().value;
+
         if (oldest !== undefined) observations.delete(oldest);
       }
     }
+
     const result = await connectionRequest(
       action,
       params,
-      {
-        pageId: context.page.id,
-        contextId: context.capturedAt,
-        expectedShapes: Object.fromEntries(
-          canvasMutationReferences(action, params).flatMap((rawId) => {
-            const id = rawId.startsWith("shape:") ? rawId : `shape:${rawId}`;
-            const revision = expectedShapes[id];
-            return revision === undefined ? [] : [[id, revision]];
-          }),
-        ),
-        ...(context.style ? { style: context.style } : {}),
-      },
+      (() => {
+        const requestContext: CanvasRequestContext = {
+          pageId: context.page.id,
+          contextId: context.capturedAt,
+          expectedShapes: Object.fromEntries(
+            canvasMutationReferences(action, params).flatMap((rawId) => {
+              const id = rawId.startsWith("shape:") ? rawId : `shape:${rawId}`;
+              const revision = expectedElements[id];
+
+              return revision === undefined ? [] : [[id, revision]];
+            }),
+          ),
+        };
+
+        if (context.style) requestContext.style = context.style;
+
+        return requestContext;
+      })(),
       signal,
     );
+
     if ("shapes" in result) {
-      for (const shape of result.shapes) {
-        if (shape.revision) expectedShapes[shape.id] = shape.revision;
+      for (const element of result.shapes) {
+        if (element.revision) expectedElements[element.id] = element.revision;
       }
     }
+
     return result;
   };
+
   const getCanvasTool = defineTool({
     name: "get_canvas",
     label: "Get Canvas",
@@ -394,7 +446,7 @@ export const createCanvasTools = (
       ),
       maxShapes: Type.Optional(
         Type.Number({
-          description: `Maximum shapes to return, 1-${MAX_SHAPES_LIMIT}. Default ${DEFAULT_MAX_SHAPES}.`,
+          description: `Maximum shapes to return, 1-${MAX_ELEMENTS_LIMIT}. Default ${DEFAULT_MAX_ELEMENTS}.`,
         }),
       ),
     }),
@@ -403,7 +455,7 @@ export const createCanvasTools = (
         "get_canvas",
         {
           scope: normalizeScope(params.scope),
-          maxShapes: normalizeMaxShapes(params.maxShapes),
+          maxShapes: normalizeMaxElements(params.maxShapes),
           includeImage: params.includeImage ?? true,
         },
         signal,
@@ -430,17 +482,18 @@ export const createCanvasTools = (
     parameters: Type.Object({
       maxShapes: Type.Optional(
         Type.Number({
-          description: `Maximum selected shapes to return, 1-${MAX_SHAPES_LIMIT}. Default ${DEFAULT_MAX_SHAPES}.`,
+          description: `Maximum selected shapes to return, 1-${MAX_ELEMENTS_LIMIT}. Default ${DEFAULT_MAX_ELEMENTS}.`,
         }),
       ),
     }),
     async execute(_toolCallId, params, signal) {
       const captured = getPromptCanvasContext();
+
       const result = captured
         ? capturedSelectionSnapshot(captured, params.maxShapes)
         : await requestCanvas(
             "get_canvas",
-            { scope: "selection", maxShapes: normalizeMaxShapes(params.maxShapes) },
+            { scope: "selection", maxShapes: normalizeMaxElements(params.maxShapes) },
             signal,
           );
 
@@ -451,7 +504,7 @@ export const createCanvasTools = (
     },
   });
 
-  const putShapeTool = defineTool({
+  const putElementTool = defineTool({
     name: "put_shape",
     label: "Put Shape",
     description:
@@ -466,20 +519,23 @@ export const createCanvasTools = (
       "Use tldraw style props, not CSS props. For example, use size ('s', 'm', 'l', 'xl') and font instead of fontSize.",
       "After finishing a figure or the whole drawing, verify it with get_canvas and fix any overflow, overlap, or misrouted arrows you see in the PNG.",
     ],
-    parameters: shapeParams,
+    parameters: elementParams,
     async execute(_toolCallId, params, signal) {
-      const { shape, tips } = normalizeShape(params);
-      const result = await requestCanvas("put_shape", { shape }, signal);
+      const { shape: element, tips } = normalizeElement(params);
+      const result = await requestCanvas("put_shape", { shape: element }, signal);
 
       const lines = [`Created shape ${result.createdShapeId}`];
+
       for (const skipped of result.skippedBindings ?? []) {
         lines.push(
           `Arrow binding skipped (${skipped.terminal} -> ${skipped.targetId}): ${skipped.reason}`,
         );
       }
+
       for (const tip of tips) {
         lines.push(`Tip: ${tip}`);
       }
+
       lines.push(...lintLines(result.lints));
 
       return {
@@ -520,12 +576,15 @@ export const createCanvasTools = (
           ? `Unsupported Mermaid diagram kind: placed as a static SVG image (${result.createdShapeIds.length} shape(s)). Only flowchart, sequenceDiagram, stateDiagram-v2, and mindmap become editable shapes.`
           : `Created ${result.createdShapeIds.length} shapes from Mermaid source.`,
       ];
+
       if (result.bounds) {
         lines.push(`Diagram bounds: ${JSON.stringify(result.bounds)}`);
       }
+
       if (result.createdShapeIds.length > 0) {
         lines.push(`Shape ids: ${result.createdShapeIds.join(", ")}`);
       }
+
       lines.push(...lintLines(result.lints));
 
       return {
@@ -560,6 +619,7 @@ export const createCanvasTools = (
     }),
     async execute(_toolCallId, params, signal) {
       const result = await requestCanvas("put_image", params, signal);
+
       return {
         content: [
           {
@@ -604,6 +664,7 @@ export const createCanvasTools = (
     }),
     async execute(_toolCallId, params, signal) {
       const result = await requestCanvas("put_draw", params, signal);
+
       return {
         content: [
           {
@@ -638,6 +699,7 @@ export const createCanvasTools = (
     }),
     async execute(_toolCallId, params, signal) {
       const result = await requestCanvas("put_highlight", params, signal);
+
       return {
         content: [
           {
@@ -670,6 +732,7 @@ export const createCanvasTools = (
     }),
     async execute(_toolCallId, params, signal) {
       const result = await requestCanvas("put_line", params, signal);
+
       return {
         content: [
           {
@@ -682,7 +745,7 @@ export const createCanvasTools = (
     },
   });
 
-  const updateShapeTool = defineTool({
+  const updateElementTool = defineTool({
     name: "update_shape",
     label: "Update Shape",
     description:
@@ -693,24 +756,28 @@ export const createCanvasTools = (
       "Pass only the fields being changed, plus id and type. Props merge into existing props; text replaces the label.",
       "Use ids returned by get_canvas, get_selection, put_shape, or put_mermaid.",
     ],
-    parameters: updateShapeParams,
+    parameters: updateElementParams,
     async execute(_toolCallId, params, signal) {
-      const { shape, tips } = normalizeShape(params);
+      const { shape: element, tips } = normalizeElement(params);
+
       const result = await requestCanvas(
         "update_shape",
-        { shape: { ...shape, id: params.id } },
+        { shape: { ...element, id: params.id } },
         signal,
       );
 
       const lines = [`Updated shape ${result.updatedShapeId}`];
+
       for (const skipped of result.skippedBindings ?? []) {
         lines.push(
           `Arrow binding skipped (${skipped.terminal} -> ${skipped.targetId}): ${skipped.reason}`,
         );
       }
+
       for (const tip of tips) {
         lines.push(`Tip: ${tip}`);
       }
+
       lines.push(...lintLines(result.lints));
 
       return {
@@ -720,7 +787,7 @@ export const createCanvasTools = (
     },
   });
 
-  const deleteShapesTool = defineTool({
+  const deleteElementsTool = defineTool({
     name: "delete_shapes",
     label: "Delete Shapes",
     description:
@@ -737,6 +804,7 @@ export const createCanvasTools = (
       const result = await requestCanvas("delete_shapes", { ids: params.ids }, signal);
 
       const lines = [`Deleted ${result.deletedShapeIds.length} shape(s)`];
+
       if (result.missingIds && result.missingIds.length > 0) {
         lines.push(`Not found (already deleted or wrong id): ${result.missingIds.join(", ")}`);
       }
@@ -748,7 +816,7 @@ export const createCanvasTools = (
     },
   });
 
-  const moveShapesTool = defineTool({
+  const moveElementsTool = defineTool({
     name: "move_shapes",
     label: "Move Shapes",
     description:
@@ -779,9 +847,11 @@ export const createCanvasTools = (
       const result = await requestCanvas("move_shapes", { moves: params.moves }, signal);
 
       const lines = [`Moved ${result.movedShapeIds.length} shape(s)`];
+
       if (result.missingIds && result.missingIds.length > 0) {
         lines.push(`Not found: ${result.missingIds.join(", ")}`);
       }
+
       lines.push(...lintLines(result.lints));
 
       return {
@@ -830,15 +900,15 @@ export const createCanvasTools = (
     tools: [
       getCanvasTool,
       getSelectionTool,
-      putShapeTool,
+      putElementTool,
       putMermaidTool,
       putImageTool,
       putDrawTool,
       putHighlightTool,
       putLineTool,
-      updateShapeTool,
-      deleteShapesTool,
-      moveShapesTool,
+      updateElementTool,
+      deleteElementsTool,
+      moveElementsTool,
       setViewTool,
     ],
   };

@@ -13,6 +13,7 @@ const until = async (condition: () => boolean): Promise<void> => {
     // oxlint-disable-next-line no-await-in-loop -- Polling must yield between successive observations.
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+
   assert.fail("Transcription test did not reach the expected state");
 };
 
@@ -33,8 +34,8 @@ const openHarness = async (
   await Promise.all([once(provider, "listening"), once(proxy, "listening")]);
   const providerAddress = provider.address();
   const proxyAddress = proxy.address();
-  assert.ok(typeof providerAddress === "object" && providerAddress);
-  assert.ok(typeof proxyAddress === "object" && proxyAddress);
+  assert.ok(providerAddress instanceof Object);
+  assert.ok(proxyAddress instanceof Object);
   const outcomes: string[] = [];
   const received: Array<{ binary: boolean; data: string }> = [];
   let upstream: WebSocket | undefined;
@@ -50,9 +51,11 @@ const openHarness = async (
       onOutcome: (outcome) => outcomes.push(outcome),
     }),
   );
+
   const client = new WebSocket(`ws://127.0.0.1:${proxyAddress.port}/transcription`, {
     origin: "http://localhost:5173",
   });
+
   const events: TranscriptionEvent[] = [];
   client.on("message", (data) => {
     const parsed = parseTranscriptionEvent(data.toString());
@@ -60,12 +63,13 @@ const openHarness = async (
     events.push(parsed.value);
   });
   await once(client, "open");
+
   return {
     client,
     events,
     received,
     outcomes,
-    send: (value: unknown) => {
+    send: <Value>(value: Value) => {
       assert.ok(upstream);
       upstream.send(JSON.stringify(value));
     },

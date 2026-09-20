@@ -24,12 +24,14 @@ const task: RunSnapshot = {
 
 test("task snapshot ordering is monotonic and terminal tasks cannot reopen", () => {
   let state = reduceAgentMessage(createChatState(), { type: "run_update", run: task });
+
   for (const sequence of [0, 1]) {
     state = reduceAgentMessage(state, {
       type: "run_update",
       run: { ...task, sequence, activity: "Stale" },
     });
   }
+
   assert.deepEqual(state.runs, [task]);
   const terminal: RunSnapshot = { ...task, status: "done", result: "Found it", sequence: 2 };
   state = reduceAgentMessage(state, { type: "run_update", run: terminal });
@@ -43,6 +45,7 @@ test("failed stream cannot consume the next response or accept late deltas", () 
     promptId: "a",
     delta: "Partial",
   });
+
   state = reduceAgentMessage(state, { type: "error", promptId: "a", message: "Failed" });
   state = reduceAgentMessage(state, { type: "text_delta", promptId: "a", delta: " late" });
   state = reduceAgentMessage(state, { type: "text_delta", promptId: "b", delta: "New response" });

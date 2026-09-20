@@ -12,6 +12,7 @@ export const transcriptionLimits = {
 } as const;
 
 const transcriptText = Type.String({ maxLength: transcriptionLimits.textCharacters });
+
 const transcriptionEventSchema = Type.Union([
   Type.Object({ type: Type.Literal("ready") }),
   Type.Object({ type: Type.Literal("transcript"), text: transcriptText }),
@@ -46,9 +47,11 @@ export const parseTranscriptionEvent = (
 ): { ok: true; value: TranscriptionEvent } | { ok: false; error: TranscriptionProtocolError } => {
   try {
     const value: unknown = JSON.parse(json);
+
     if (Check(transcriptionEventSchema, value)) return { ok: true, value };
   } catch {
     // Invalid JSON has the same safe outcome as an invalid event shape.
   }
+
   return { ok: false, error: new TranscriptionProtocolError() };
 };

@@ -17,6 +17,7 @@ export type ChatMessage = {
   toolCallId?: string;
   isError?: boolean;
 };
+
 /** Browser conversation state excludes the tldraw document and task-window geometry. */
 export type ChatState = {
   ready: boolean;
@@ -30,11 +31,13 @@ export type ChatState = {
   dismissedRuns: string[];
   noticeSequence: number;
 };
+
 const idleRole: RoleModelState = {
   current: null,
   thinkingLevel: "off",
   availableThinkingLevels: ["off"],
 };
+
 /** Each socket hook starts with an independent, empty conversation. */
 export const createChatState = (): ChatState => ({
   ready: false,
@@ -48,6 +51,7 @@ export const createChatState = (): ChatState => ({
   dismissedRuns: [],
   noticeSequence: 0,
 });
+
 const closePrompt = (current: string[], promptId: string): string[] =>
   [...current.filter((id) => id !== promptId), promptId].slice(-256);
 
@@ -62,23 +66,32 @@ export const reduceAgentMessage = (state: ChatState, message: ServerMessage): Ch
       return { ...state, busy: message.busy };
     case "run_update": {
       const { run } = message;
+
       if (state.dismissedRuns.includes(run.runId)) return state;
       const known = state.runs.find((item) => item.runId === run.runId);
+
       if (known && known.sequence >= run.sequence) return state;
+
       if (known && known.status !== "queued" && known.status !== "running") return state;
+
       const runs = known
         ? state.runs.map((item) => (item.runId === run.runId ? run : item))
         : [...state.runs, run];
+
       const active = runs.filter((item) => item.status === "queued" || item.status === "running");
+
       const terminal = runs
         .filter((item) => item.status !== "queued" && item.status !== "running")
         .slice(-100);
+
       return { ...state, runs: [...active, ...terminal].sort((a, b) => a.createdAt - b.createdAt) };
     }
+
     case "text_delta": {
       if (state.closedPrompts.includes(message.promptId)) return state;
       const id = `assistant:${message.promptId}`;
       const existing = state.messages.find((item) => item.id === id);
+
       return {
         ...state,
         messages: existing
@@ -93,8 +106,10 @@ export const reduceAgentMessage = (state: ChatState, message: ServerMessage): Ch
             ].slice(-500),
       };
     }
+
     case "tool_start":
       if (state.closedPrompts.includes(message.promptId)) return state;
+
       return {
         ...state,
         messages: [
@@ -165,7 +180,9 @@ export const disconnectChatState = (state: ChatState, now: number): ChatState =>
 /** Dismissal applies only to terminal tasks and prevents a late update from reopening a card. */
 export const dismissChatRun = (state: ChatState, runId: string): ChatState => {
   const run = state.runs.find((item) => item.runId === runId);
+
   if (!run || run.status === "queued" || run.status === "running") return state;
+
   return {
     ...state,
     runs: state.runs.filter((item) => item.runId !== runId),
