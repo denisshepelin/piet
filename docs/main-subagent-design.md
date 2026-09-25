@@ -11,7 +11,7 @@ voice + canvas context
        <- findings -> main agent draws the answer
 ```
 
-The main session handles all drawing through native shapes and requested image imports. It has no `spawn_canvas`, `propose_canvas`, or whole-diagram `put_mermaid` tool. Research workers have repository tools only; they cannot draw. The browser owns the live tldraw document.
+The main session handles all drawing through native shapes, whole-diagram Mermaid rendering, and requested image imports. It has no `spawn_canvas` or `propose_canvas` tool. Research workers have repository tools only; they cannot draw. The browser owns the live tldraw document.
 
 Defaults are `openai-codex/gpt-6-astra` with low thinking for main and `openai-codex/gpt-5.6-luna` with medium thinking for research. Model IDs/providers can be overridden with `MAIN_MODEL_ID`, `MAIN_MODEL_PROVIDER`, `RESEARCH_MODEL_ID`, and `RESEARCH_MODEL_PROVIDER`; model and thinking settings can also be changed in the inspector. These defaults are an experiment, not a benchmark claim that Luna is faster than Sol.
 
@@ -19,9 +19,15 @@ Research uses a short standalone system prompt rather than inheriting the full c
 
 ## Progressive drawing
 
-Once intent and placement are clear, the main agent should draw rather than explain a plan. It starts with 1–3 meaningful shapes, then uses `put_shapes` for small groups with a schema-enforced maximum of three shapes per call. The prompt requires one drawing call per model response, waiting for its result before generating the next step. Each successful call commits immediately. Trees grow root-first, then a child and connector; sequence diagrams grow participant-first, then one message at a time. Whole-diagram Mermaid rendering is not exposed to the main agent, and generated images must not be used to bypass incremental diagram drawing. The browser's Mermaid support remains available internally for compatibility.
+Once intent and placement are clear, the main agent should draw rather than explain a plan. `put_shapes` accepts up to 12 shapes per call (schema-enforced). The backend watches the call while the model is still generating it: each array element is committed as soon as the next one starts, so shapes appear one by one without extra model round-trips. The model orders shapes as they should appear (title/root, nodes, then bound connectors), draws a small diagram in one call, and may make several independent drawing calls in one response. An element that references a shape which is neither on the canvas nor earlier in the call stops streaming; the rest of the call commits together when it executes, where the browser resolves forward references. Generated images must not be used to bypass native diagram drawing.
 
-Successful batches stay visible while later batches are prepared or corrected. Cancellation stops future work; it does not roll back committed batches. Each batch has its own undo boundary. Whole-task undo is not implemented. See [canvas validation and repair](canvas-proposal-repair.md).
+Structured diagrams (flowcharts, hierarchies, request flows, sequence and state diagrams, mindmaps) go through `put_mermaid` instead. The Mermaid source is a small fraction of the equivalent shape JSON, and output generation dominates drawing time, so a diagram lands much sooner even though it appears in one commit rather than shape by shape. `@tldraw/mermaid` turns it into editable geo shapes and bound arrows in the staging editor, and the result carries ids, bounds, and lints like any other write. Pictures, worksheets, tables, pros/cons columns, and additions to existing boards stay on `put_shapes`. When research will end in a Mermaid diagram, the main agent delegates without pre-drawing nodes.
+
+Successful tool results carry measured bounds and layout lints, so the main agent does not re-read the canvas to review a finished drawing. It reads again only after warnings, conflicts, or an explicit request to check.
+
+The main agent answers from its own knowledge by default, including comparisons, estimates, decisions, and explanations. It delegates to research only when the answer depends on repository files or command output it cannot see.
+
+Committed shapes stay visible while later shapes are generated or corrected. Cancellation stops future work; it does not roll back committed shapes. Each canvas request has its own undo boundary. Whole-task undo is not implemented. See [canvas validation and repair](canvas-proposal-repair.md).
 
 Only research is asynchronous. The main session is serial while drawing; new user requests queue until it finishes or is cancelled. The main agent remains available after delegating research and ending its acknowledgement turn. User requests take priority over queued research synthesis.
 

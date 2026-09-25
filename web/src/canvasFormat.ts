@@ -19,8 +19,10 @@ import {
   type CanvasJsonObject,
   type CanvasJsonValue,
   type CanvasElementSummary,
+  type CanvasVisibleElement,
   type PromptCanvasContext,
 } from "@piet/protocol";
+import { summarizeVisibleElements } from "./canvasVisible.ts";
 
 /** Explicit style values captured from the selection or the board defaults. */
 export type CanvasStyleProfile = {
@@ -52,15 +54,29 @@ export const capturePromptCanvasContext = (
   };
 
   if (selectionBounds) selection.bounds = roundCanvasBounds(selectionBounds);
+  const viewport = editor.getViewportPageBounds();
+
+  const visibleElements = editor
+    .getCurrentPageShapesSorted()
+    .flatMap((element): CanvasVisibleElement[] => {
+      const bounds = editor.getShapePageBounds(element);
+
+      if (!bounds?.collides(viewport)) return [];
+      const visible = { id: element.id, type: element.type, ...roundCanvasBounds(bounds) };
+      const text = elementText(editor, element);
+
+      return [text === undefined ? visible : { ...visible, text }];
+    });
 
   return {
     capturedAt: new Date().toISOString(),
     page: { id: page.id, name: page.name },
     zoom: Math.round(editor.getZoomLevel() * 100) / 100,
     anchor,
-    viewport: roundCanvasBounds(editor.getViewportPageBounds()),
+    viewport: roundCanvasBounds(viewport),
     style: captureCanvasStyleProfile(editor),
     selection,
+    visible: summarizeVisibleElements(visibleElements),
   };
 };
 
@@ -250,6 +266,15 @@ const buildProps = (
   return Object.keys(picked).length > 0 ? picked : undefined;
 };
 
+/** Plain label of a shape: a frame's name or the text of its rich-text content. */
+const elementText = (editor: Editor, element: TLElement): string | undefined => {
+  const rawProps = isRecord(element.props) ? element.props : {};
+
+  if (element.type !== "frame") return plainTextFromRichText(editor, rawProps.richText);
+
+  return isCanvasJsonString(rawProps.name) && rawProps.name.length > 0 ? rawProps.name : undefined;
+};
+
 /** Produces a compact page-space summary and a fingerprint for conflict checks. */
 export const summarizeElement = (editor: Editor, element: TLElement): CanvasElementSummary => {
   const pageBounds = editor.getShapePageBounds(element);
@@ -279,14 +304,7 @@ export const summarizeElement = (editor: Editor, element: TLElement): CanvasElem
 
   if (element.isLocked) summary.isLocked = true;
 
-  const rawProps = isRecord(element.props) ? element.props : {};
-
-  const text =
-    element.type === "frame"
-      ? isCanvasJsonString(rawProps.name) && rawProps.name.length > 0
-        ? rawProps.name
-        : undefined
-      : plainTextFromRichText(editor, rawProps.richText);
+  const text = elementText(editor, element);
 
   if (text !== undefined) summary.text = text;
 
