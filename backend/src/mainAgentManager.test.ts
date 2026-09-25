@@ -74,6 +74,7 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
   type ToolCall = { name: string; arguments: CanvasJsonObject };
 
   const completions: Array<(text: string, toolCall?: ToolCall) => void> = [];
+  const partialToolCalls: Array<(toolCall: ToolCall) => void> = [];
   const prompts: string[] = [];
   const promptTools: string[][] = [];
   let canvasReads = 0;
@@ -140,15 +141,31 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
         };
 
         streamOptions?.signal?.addEventListener("abort", abort, { once: true });
+        const callId = `call-${completions.length + 1}`;
+        let started = false;
+
+        partialToolCalls.push((toolCall) => {
+          if (finished) return;
+          const partial = message("", "toolUse");
+          partial.content.push({ type: "toolCall", id: callId, ...toolCall });
+
+          if (!started) {
+            started = true;
+            stream.push({ type: "start", partial });
+            stream.push({ type: "toolcall_start", contentIndex: 1, partial });
+          }
+
+          stream.push({ type: "toolcall_delta", contentIndex: 1, delta: "", partial });
+        });
         completions.push((text, toolCall) => {
           if (finished) return;
           finished = true;
           streamOptions?.signal?.removeEventListener("abort", abort);
           const final = message(text, toolCall ? "toolUse" : "stop");
 
-          if (toolCall)
-            final.content.push({ type: "toolCall", id: `call-${completions.length}`, ...toolCall });
-          stream.push({ type: "start", partial: final });
+          if (toolCall) final.content.push({ type: "toolCall", id: callId, ...toolCall });
+
+          if (!started) stream.push({ type: "start", partial: final });
           stream.push({ type: "text_start", contentIndex: 0, partial: final });
           stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: final });
           stream.push({ type: "text_end", contentIndex: 0, content: text, partial: final });
@@ -165,7 +182,15 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
 
   await manager.initialize();
 
-  return { manager, sent, prompts, promptTools, completions, canvasReads: () => canvasReads };
+  return {
+    manager,
+    sent,
+    prompts,
+    promptTools,
+    completions,
+    partialToolCalls,
+    canvasReads: () => canvasReads,
+  };
 };
 
 test("real main sessions serialize prompts, capture intent, and avoid unconditional screenshots", async () => {
@@ -282,7 +307,7 @@ test("research synthesis retains the original worksheet request after another us
     assert.match(synthesis, /single binary/);
     assert.match(synthesis, /shape:pros/);
     assert.match(synthesis, /task-window summary alone is not completion/);
-    assert.match(synthesis, /Draw the answer directly with small put_shapes batches/);
+    assert.match(synthesis, /put_mermaid for a flow, sequence, state, or hierarchy diagram/);
     assert.match(synthesis, /at most 3 short bullets per column/);
     assert.doesNotMatch(synthesis, /Unrelated question/);
     harness.completions[4]?.("Preparing the canvas answer");
@@ -317,7 +342,7 @@ test("main agent commits progressive batches before its final answer without a c
     });
     await until(() => harness.completions.length === 1);
     assert.ok(harness.promptTools[0]?.includes("put_shapes"));
-    assert.ok(!harness.promptTools[0]?.includes("put_mermaid"));
+    assert.ok(harness.promptTools[0]?.includes("put_mermaid"));
     assert.ok(harness.promptTools[0]?.includes("put_image"));
     assert.ok(harness.promptTools[0]?.includes("spawn_research"));
     assert.ok(!harness.promptTools[0]?.includes("spawn_canvas"));
@@ -347,14 +372,14 @@ test("main agent commits progressive batches before its final answer without a c
   }
 });
 
-test("oversized drawing batches are rejected before the browser and can be split into small steps", async () => {
+test("oversized drawing batches are rejected before the browser and can be split", async () => {
   let writes = 0;
 
   const harness = await createHarness(async (action, params) => {
     writes++;
 
     if (!("shapes" in params)) throw new Error("Expected drawing batch");
-    assert.ok(params.shapes.length <= 3);
+    assert.ok(params.shapes.length <= 12);
     const result = { createdShapeIds: params.shapes.map((element) => `shape:${element.id}`) };
 
     if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
@@ -366,12 +391,12 @@ test("oversized drawing batches are rejected before the browser and can be split
     await harness.manager.handle({
       type: "prompt",
       id: "stepwise",
-      text: "Draw a tree step by step",
+      text: "Draw a large tree",
       canvasContext: context,
     });
     await until(() => harness.completions.length === 1);
 
-    const elements = Array.from({ length: 4 }, (_value, index) => ({
+    const elements = Array.from({ length: 13 }, (_value, index) => ({
       id: `node-${index}`,
       type: "geo",
       text: `Node ${index}`,
@@ -382,16 +407,191 @@ test("oversized drawing batches are rejected before the browser and can be split
     assert.equal(writes, 0);
     harness.completions[1]?.("", {
       name: "put_shapes",
-      arguments: { shapes: elements.slice(0, 3) },
+      arguments: { shapes: elements.slice(0, 12) },
     });
     await until(() => harness.completions.length === 3);
     assert.equal(writes, 1);
     assert.ok(!harness.sent.some((message) => message.type === "prompt_done"));
-    harness.completions[2]?.("", { name: "put_shapes", arguments: { shapes: elements.slice(3) } });
+    harness.completions[2]?.("", { name: "put_shapes", arguments: { shapes: elements.slice(12) } });
     await until(() => harness.completions.length === 4);
     assert.equal(writes, 2);
     harness.completions[3]?.("Drew the tree.");
     await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+  } finally {
+    harness.manager.dispose();
+  }
+});
+
+test("put_shapes commits each shape while the tool call is still streaming", async () => {
+  const committed: string[][] = [];
+
+  const harness = await createHarness(async (action, params) => {
+    if (!("shapes" in params)) throw new Error("Expected drawing batch");
+    const ids = params.shapes.map((element) => `shape:${element.id}`);
+    committed.push(ids);
+    const x = committed.length * 100;
+    const result = { createdShapeIds: ids, bounds: { x, y: 0, w: 50, h: 50 } };
+
+    if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
+    return result;
+  });
+
+  const node = (id: string) => ({ id, type: "geo", text: id });
+
+  try {
+    await harness.manager.handle({
+      type: "prompt",
+      id: "streaming",
+      text: "Draw a tree",
+      canvasContext: context,
+    });
+    await until(() => harness.completions.length === 1);
+    const partial = harness.partialToolCalls[0];
+    assert.ok(partial);
+    partial({ name: "put_shapes", arguments: { shapes: [node("root")] } });
+    partial({ name: "put_shapes", arguments: { shapes: [node("root"), { id: "le" }] } });
+    await until(() => committed.length === 1);
+    assert.deepEqual(committed, [["shape:root"]]);
+    partial({ name: "put_shapes", arguments: { shapes: [node("root"), node("left"), {}] } });
+    await until(() => committed.length === 2);
+    assert.deepEqual(committed[1], ["shape:left"]);
+
+    harness.completions[0]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: [node("root"), node("left"), node("right")] },
+    });
+    await until(() => harness.completions.length === 2);
+    assert.deepEqual(committed, [["shape:root"], ["shape:left"], ["shape:right"]]);
+
+    const toolEnd = harness.sent.find(
+      (message) => message.type === "tool_end" && message.toolName === "put_shapes",
+    );
+
+    assert.ok(toolEnd?.type === "tool_end");
+    assert.equal(toolEnd.isError, false);
+    assert.match(
+      JSON.stringify(toolEnd.result),
+      /Committed 3 shapes: shape:root, shape:left, shape:right/,
+    );
+    assert.match(
+      JSON.stringify(toolEnd.result),
+      /\{\\"x\\":100,\\"y\\":0,\\"w\\":250,\\"h\\":50\}/,
+    );
+    harness.completions[1]?.("Drew the tree.");
+    await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+    const final = harness.sent.findLast((message) => message.type === "run_update");
+    assert.ok(final?.type === "run_update");
+    assert.equal(final.run.status, "done");
+  } finally {
+    harness.manager.dispose();
+  }
+});
+
+test("streaming holds back shapes that reference later shapes in the same call", async () => {
+  const committed: string[][] = [];
+
+  const harness = await createHarness(async (action, params) => {
+    if (!("shapes" in params)) throw new Error("Expected drawing batch");
+    const ids = params.shapes.map((element) => `shape:${element.id}`);
+    committed.push(ids);
+    const result = { createdShapeIds: ids };
+
+    if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
+    return result;
+  });
+
+  const root = { id: "root", type: "geo", text: "Root" };
+  const note = { id: "note", type: "text", text: "Below", placement: { below: ["later"] } };
+  const later = { id: "later", type: "geo", text: "Later" };
+
+  try {
+    await harness.manager.handle({
+      type: "prompt",
+      id: "forward",
+      text: "Draw",
+      canvasContext: context,
+    });
+    await until(() => harness.completions.length === 1);
+    const partial = harness.partialToolCalls[0];
+    assert.ok(partial);
+    partial({ name: "put_shapes", arguments: { shapes: [root, note, later, {}] } });
+    await until(() => committed.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(committed, [["shape:root"]]);
+
+    harness.completions[0]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: [root, note, later] },
+    });
+    await until(() => harness.completions.length === 2);
+    assert.deepEqual(committed, [["shape:root"], ["shape:note", "shape:later"]]);
+    harness.completions[1]?.("Done.");
+    await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+  } finally {
+    harness.manager.dispose();
+  }
+});
+
+test("a rejected streamed shape stops the call and reports what was already committed", async () => {
+  const committed: string[] = [];
+
+  const harness = await createHarness(async (action, params) => {
+    if (!("shapes" in params)) throw new Error("Expected drawing batch");
+
+    if (params.shapes.some((element) => element.id === "bad"))
+      throw new CanvasRequestRejectedError("Canvas layout rejected: bad overlaps root");
+    committed.push(...params.shapes.map((element) => `shape:${element.id}`));
+    const result = { createdShapeIds: params.shapes.map((element) => `shape:${element.id}`) };
+
+    if (!isCanvasActionResult(action, result)) throw new Error("Invalid canvas test result");
+
+    return result;
+  });
+
+  const node = (id: string) => ({ id, type: "geo", text: id });
+
+  try {
+    await harness.manager.handle({
+      type: "prompt",
+      id: "rejected",
+      text: "Draw",
+      canvasContext: context,
+    });
+    await until(() => harness.completions.length === 1);
+    const partial = harness.partialToolCalls[0];
+    assert.ok(partial);
+    partial({ name: "put_shapes", arguments: { shapes: [node("root"), {}] } });
+    await until(() => committed.length === 1);
+    partial({ name: "put_shapes", arguments: { shapes: [node("root"), node("bad"), {}] } });
+
+    harness.completions[0]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: [node("root"), node("bad"), node("after")] },
+    });
+    await until(() => harness.completions.length === 2);
+    assert.deepEqual(committed, ["shape:root"]);
+
+    const toolEnd = harness.sent.find(
+      (message) => message.type === "tool_end" && message.toolName === "put_shapes",
+    );
+
+    assert.ok(toolEnd?.type === "tool_end");
+    assert.equal(toolEnd.isError, true);
+    assert.match(JSON.stringify(toolEnd.result), /bad overlaps root/);
+    assert.match(JSON.stringify(toolEnd.result), /Already committed from this call: shape:root/);
+
+    harness.completions[1]?.("", {
+      name: "put_shapes",
+      arguments: { shapes: [{ ...node("bad"), id: "fixed" }, node("after")] },
+    });
+    await until(() => harness.completions.length === 3);
+    harness.completions[2]?.("Drew it.");
+    await until(() => harness.sent.some((message) => message.type === "prompt_done"));
+    const final = harness.sent.findLast((message) => message.type === "run_update");
+    assert.ok(final?.type === "run_update");
+    assert.equal(final.run.status, "error");
   } finally {
     harness.manager.dispose();
   }

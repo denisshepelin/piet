@@ -662,7 +662,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
       "Start a bounded repository research run in the background. Returns immediately; the result will be delivered later.",
     promptSnippet: "Start one bounded repository research run without waiting for its result.",
     promptGuidelines: [
-      "Use spawn_research for independent repository inspection, read-only commands, comparisons, or analysis.",
+      "Use spawn_research only when the answer depends on repository files or command output. Answer general knowledge, comparisons, estimates, and decisions directly without spawning research.",
       "Fan out only when tasks are independent, using one spawn_research call per task.",
       "For canvas decisions, request a ranked shortlist and one takeaway separately from supporting evidence. Do not ask for exhaustive lists to paste onto the board.",
       "Tell the user that the work is running in the background and finish this turn without waiting.",

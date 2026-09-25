@@ -124,6 +124,17 @@ const snapshot = Type.Object({
   style: Type.Optional(style),
 });
 
+/** Minimal record of a shape in the viewport: enough to find free space and bind to it. */
+const visibleElement = Type.Object({
+  id,
+  type: Type.String({ maxLength: 64 }),
+  x: number,
+  y: number,
+  w: optionalNumber,
+  h: optionalNumber,
+  text: Type.Optional(Type.String({ maxLength: 200 })),
+});
+
 const promptContext = Type.Object({
   capturedAt: Type.String(),
   page,
@@ -138,6 +149,13 @@ const promptContext = Type.Object({
     truncated: Type.Boolean(),
     shapes: Type.Array(elementSummary, { maxItems: 1_000 }),
   }),
+  visible: Type.Optional(
+    Type.Object({
+      shapeCount: Type.Integer({ minimum: 0 }),
+      truncated: Type.Boolean(),
+      shapes: Type.Array(visibleElement, { maxItems: 200 }),
+    }),
+  ),
 });
 
 const point = Type.Object({
@@ -574,6 +592,8 @@ export type CanvasElementSummary = Static<typeof elementSummary>;
 
 /** Intent context is captured at text submission or voice recording start, before later canvas edits. */
 export type PromptCanvasContext = Static<typeof promptContext>;
+
+export type CanvasVisibleElement = Static<typeof visibleElement>;
 
 /** Author attribution is metadata, not a separate canvas replica. */
 export type CanvasActor = Static<typeof actor>;

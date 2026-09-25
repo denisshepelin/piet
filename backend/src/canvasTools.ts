@@ -1,6 +1,12 @@
 import { Buffer } from "node:buffer";
 import { canvasElementsForModel } from "./canvasModelContext.js";
-import { Type, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
+import {
+  Type,
+  type ImageContent,
+  type Static,
+  type TextContent,
+  type ToolCall,
+} from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -8,6 +14,7 @@ import {
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import type { CanvasRequestContext, RequestCanvas } from "./canvasConnection.js";
 import {
   canvasActionSchemas,
@@ -28,6 +35,11 @@ import {
 const DEFAULT_MAX_ELEMENTS = 200;
 
 const MAX_ELEMENTS_LIMIT = 1_000;
+
+/** Upper bound for one put_shapes call; shapes still appear one by one while the call streams. */
+const MAX_BATCH_ELEMENTS = 12;
+
+const MAX_STREAMED_BATCHES = 32;
 
 const elementFields = {
   type: Type.String({
@@ -71,6 +83,10 @@ const elementParams = Type.Object({
   ),
   ...elementFields,
   placement: canvasActionSchemas.put_shapes.params.properties.shapes.items.properties.placement,
+});
+
+const putElementsParams = Type.Object({
+  shapes: Type.Array(elementParams, { minItems: 1, maxItems: MAX_BATCH_ELEMENTS }),
 });
 
 const updateElementParams = Type.Object({
@@ -306,6 +322,73 @@ const snapshotContent = (snapshot: CanvasSnapshot): (TextContent | ImageContent)
   return content;
 };
 
+type CanvasBounds = NonNullable<CanvasActionResult<"put_shapes">["bounds"]>;
+
+const unionBounds = (boxes: readonly CanvasBounds[]): CanvasBounds | undefined => {
+  if (boxes.length === 0) return undefined;
+  const left = Math.min(...boxes.map((box) => box.x));
+  const top = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.w));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.h));
+
+  return { x: left, y: top, w: right - left, h: bottom - top };
+};
+
+const reasonText = (reason: Error | string): string =>
+  reason instanceof Error ? reason.message : String(reason);
+
+/** Shapes from one streaming put_shapes call that were committed before the call executed. */
+type StreamedBatch = {
+  count: number;
+  readonly commits: Promise<{
+    readonly result: CanvasActionResult<"put_shapes">;
+    readonly tips: readonly string[];
+  }>[];
+};
+
+const bareId = (id: string): string => id.replace(/^shape:/, "");
+
+const elementReferences = (element: Static<typeof elementParams>): string[] =>
+  [
+    element.parentId,
+    element.startShapeId,
+    element.endShapeId,
+    ...(element.placement?.below ?? []),
+  ].flatMap((id) => (id === undefined ? [] : [bareId(id)]));
+
+/**
+ * Shapes that are safe to commit while a put_shapes call is still streaming. An array element is
+ * final once the next one has started. Streaming stops at an element that references a shape which
+ * is neither on the canvas nor earlier in the call, because the browser can only resolve forward
+ * references within one request; the rest is committed together when the call executes.
+ */
+const streamableElements = (
+  args: ToolCall["arguments"],
+  complete: boolean,
+  knownIds: ReadonlySet<string>,
+): Static<typeof elementParams>[] => {
+  if (complete) return Check(putElementsParams, args) ? args.shapes : [];
+  const elements: ToolCall["arguments"][] = Array.isArray(args.shapes) ? args.shapes : [];
+  const closed = elements.slice(0, Math.min(elements.length - 1, MAX_BATCH_ELEMENTS));
+  const valid: Static<typeof elementParams>[] = [];
+  const earlierIds = new Set<string>();
+
+  for (const element of closed) {
+    if (!Check(elementParams, element)) break;
+
+    const resolvable = elementReferences(element).every(
+      (id) => earlierIds.has(id) || knownIds.has(id),
+    );
+
+    if (!resolvable) break;
+    valid.push(element);
+
+    if (element.id !== undefined) earlierIds.add(bareId(element.id));
+  }
+
+  return valid;
+};
+
 const lintLines = (lints: CanvasLint[] | undefined): string[] =>
   (lints ?? []).map((lint) => `Lint (${lint.kind}): ${lint.message}`);
 
@@ -367,6 +450,7 @@ export const createCanvasTools = (
   getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
 ) => {
   const observations = new Map<string, Record<string, string>>();
+  const knownIds = new Set<string>();
 
   const requestCanvas = async <A extends CanvasAction>(
     action: A,
@@ -419,9 +503,16 @@ export const createCanvasTools = (
 
     if ("shapes" in result) {
       for (const element of result.shapes) {
+        knownIds.add(bareId(element.id));
+
         if (element.revision) expectedElements[element.id] = element.revision;
       }
     }
+
+    if ("createdShapeIds" in result)
+      for (const id of result.createdShapeIds) knownIds.add(bareId(id));
+
+    if ("createdShapeId" in result) knownIds.add(bareId(result.createdShapeId));
 
     return result;
   };
@@ -523,7 +614,7 @@ export const createCanvasTools = (
       "Bind connecting arrows with startShapeId/endShapeId referencing shapes created in earlier calls; bound arrows route to shape edges and follow moved shapes.",
       "Pass plain text in the shape text field; the client converts it to tldraw rich text.",
       "Use tldraw style props, not CSS props. For example, use size ('s', 'm', 'l', 'xl') and font instead of fontSize.",
-      "After finishing a figure or the whole drawing, verify it with get_canvas and fix any overflow, overlap, or misrouted arrows you see in the PNG.",
+      "Tool results report measured bounds and layout problems; do not re-read the canvas to review a successful drawing.",
     ],
     parameters: elementParams,
     async execute(_toolCallId, params, signal) {
@@ -551,29 +642,113 @@ export const createCanvasTools = (
     },
   });
 
+  const streamedBatches = new Map<string, StreamedBatch>();
+
+  /** Commits put_shapes elements as soon as their JSON is final, before the tool call executes. */
+  const streamPutElements = (
+    toolCallId: string,
+    args: ToolCall["arguments"],
+    complete: boolean,
+  ): void => {
+    const context = getPromptCanvasContext();
+
+    const ready = streamableElements(
+      args,
+      complete,
+      new Set([
+        ...knownIds,
+        ...(context?.selection.shapes.map((element) => bareId(element.id)) ?? []),
+      ]),
+    );
+
+    const batch = streamedBatches.get(toolCallId) ?? { count: 0, commits: [] };
+    const fresh = ready.slice(batch.count);
+
+    if (fresh.length === 0) return;
+
+    if (!streamedBatches.has(toolCallId)) {
+      streamedBatches.set(toolCallId, batch);
+
+      if (streamedBatches.size > MAX_STREAMED_BATCHES) {
+        const oldest = streamedBatches.keys().next().value;
+
+        if (oldest !== undefined) streamedBatches.delete(oldest);
+      }
+    }
+
+    batch.count += fresh.length;
+    const normalized = fresh.map(normalizeElement);
+    const previous = batch.commits.at(-1) ?? Promise.resolve();
+
+    const commit = previous.then(async () => ({
+      result: await requestCanvas("put_shapes", {
+        shapes: normalized.map((element) => element.shape),
+      }),
+      tips: normalized.flatMap((element) => element.tips),
+    }));
+
+    commit.catch(() => undefined);
+    batch.commits.push(commit);
+  };
+
   const putElementsTool = defineTool({
     name: "put_shapes",
     label: "Draw Canvas Batch",
-    description:
-      "Immediately validate and commit a small batch of editable shapes. Each successful call is visible before the next model turn; do not wait to generate the whole drawing. Use 1–3 shapes per visible step (maximum 3). Make only one drawing tool call per response and wait for its result before constructing the next step. Rejected batches leave no changes; correct only that batch using returned errors and measured bounds. Earlier successful batches remain visible. Bind arrows to existing shapes or shapes in this batch. Use placement.below for measured vertical spacing.",
-    parameters: Type.Object({ shapes: Type.Array(elementParams, { minItems: 1, maxItems: 3 }) }),
-    async execute(_toolCallId, params, signal) {
-      const normalized = params.shapes.map(normalizeElement);
+    description: `Validate and commit a batch of up to ${MAX_BATCH_ELEMENTS} editable shapes. Shapes appear on the canvas one by one while this call is still being generated, in array order, so order them as they should be drawn: title/root first, then nodes, then bound connectors. A rejected shape stops the rest of the call; shapes before it stay committed and the error lists them. Correct and resend only uncommitted shapes. Bind arrows to existing shapes or earlier shapes in this batch. Use placement.below for measured vertical spacing.`,
+    parameters: putElementsParams,
+    async execute(toolCallId, params, signal) {
+      const batch = streamedBatches.get(toolCallId);
+      streamedBatches.delete(toolCallId);
+      const settled = await Promise.allSettled(batch?.commits ?? []);
 
-      const result = await requestCanvas(
-        "put_shapes",
-        { shapes: normalized.map((element) => element.shape) },
-        signal,
+      const streamed = settled.flatMap((outcome) =>
+        outcome.status === "fulfilled" ? [outcome.value] : [],
       );
+
+      const committedIds = streamed.flatMap((commit) => commit.result.createdShapeIds);
+      const failure = settled.find((outcome) => outcome.status === "rejected");
+
+      if (failure?.status === "rejected") {
+        throw new Error(
+          `${reasonText(failure.reason)}\nAlready committed from this call: ${committedIds.join(", ") || "none"}. Resend only the uncommitted shapes.`,
+        );
+      }
+
+      const remaining = params.shapes.slice(batch?.count ?? 0).map(normalizeElement);
+
+      const rest =
+        remaining.length === 0
+          ? undefined
+          : {
+              result: await requestCanvas(
+                "put_shapes",
+                { shapes: remaining.map((element) => element.shape) },
+                signal,
+              ),
+              tips: remaining.flatMap((element) => element.tips),
+            };
+
+      const commits = rest ? [...streamed, rest] : streamed;
+      const createdIds = commits.flatMap((commit) => commit.result.createdShapeIds);
+
+      const bounds = unionBounds(
+        commits.flatMap((commit) => (commit.result.bounds ? [commit.result.bounds] : [])),
+      );
+
+      const lints = commits.flatMap((commit) => commit.result.lints ?? []);
+      const tips = [...new Set(commits.flatMap((commit) => commit.tips))];
 
       return {
         content: [
           {
             type: "text",
-            text: `Committed ${result.createdShapeIds.length} shapes: ${result.createdShapeIds.join(", ")}\nBounds: ${JSON.stringify(result.bounds)}\n${normalized.flatMap((element) => element.tips).join("\n")}`,
+            text: `Committed ${createdIds.length} shapes: ${createdIds.join(", ")}\nBounds: ${JSON.stringify(bounds)}\n${tips.join("\n")}`,
           },
         ],
-        details: result,
+        details:
+          lints.length > 0
+            ? { createdShapeIds: createdIds, bounds, lints }
+            : { createdShapeIds: createdIds, bounds },
       };
     },
   });
@@ -585,10 +760,11 @@ export const createCanvasTools = (
       "Create a whole diagram from Mermaid source as native, editable tldraw shapes (boxes plus bound arrows) with layout computed for you. Supports flowchart/graph, sequenceDiagram, stateDiagram-v2, and mindmap; other Mermaid kinds are placed as a static SVG fallback. Prefer this over many put_shape calls whenever the content fits one of the supported diagram kinds. x/y place the diagram's top-left in page space; omit both to place at the viewport center.",
     promptSnippet: "Create a full diagram on the tldraw canvas from Mermaid source in one call.",
     promptGuidelines: [
-      "Prefer put_mermaid over shape-by-shape put_shape calls for flowcharts, sequence diagrams, state diagrams, and mindmaps.",
-      "Keep node labels short; put long explanations in separate text shapes afterwards with put_shape.",
-      "After creating the diagram, verify it with get_canvas and use update_shape/move_shapes to fix issues; the created shapes are ordinary tldraw shapes.",
-      "Position with x/y next to related content; omit x/y to place at the viewport center.",
+      "Use put_mermaid instead of put_shapes for flowcharts, hierarchies, sequence diagrams, state diagrams, and mindmaps: the source is far shorter than shape JSON and layout is computed for you.",
+      "Use only flowchart/graph, sequenceDiagram, stateDiagram-v2, or mindmap; other kinds become a static image.",
+      "Keep node labels short; put long explanations in separate text shapes afterwards with put_shapes.",
+      "The diagram size is known only after rendering, so place x/y in clear space to the right of or below related content, not between existing shapes.",
+      "The result reports created shape ids, bounds, and layout problems; do not re-read the canvas to review a successful diagram. Fix reported overlaps with move_shapes.",
     ],
     parameters: Type.Object({
       source: Type.String({
@@ -945,5 +1121,6 @@ export const createCanvasTools = (
       moveElementsTool,
       setViewTool,
     ],
+    streamPutElements,
   };
 };

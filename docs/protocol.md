@@ -20,7 +20,7 @@ Run `pnpm build` to build packages in dependency order. `pnpm dev` starts protoc
 - `client_log { events }`
 - `ping`
 
-`canvasContext` captures the originating page, viewport, selection, anchor, and optional style profile. Shape summaries may contain record fingerprints for edit preconditions. Coordinates are always page-space. The input adapter captures context once regardless of whether the intent originates from typing or a future voice transcript.
+`canvasContext` captures the originating page, viewport, selection, anchor, optional style profile, and an optional `visible` list. `visible` holds the id, type, rounded page bounds, and a label of at most 80 characters for up to 80 of the largest shapes intersecting the viewport, in z-order, with `truncated` set when shapes were dropped. It lets the main agent place a new drawing without a `get_canvas` round-trip. Shape summaries may contain record fingerprints for edit preconditions. Coordinates are always page-space. The input adapter captures context once regardless of whether the intent originates from typing or a future voice transcript.
 
 ## Backend to browser
 

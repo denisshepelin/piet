@@ -21,7 +21,20 @@ test("main agent owns drawing and receives native shape and layout guidance", ()
   assert.match(MAIN_SYSTEM_PROMPT, /constrains width, NOT height/);
   assert.match(MAIN_SYSTEM_PROMPT, /Avoid blank lines/);
   assert.match(MAIN_SYSTEM_PROMPT, /There is no canvas worker/);
-  assert.doesNotMatch(MAIN_SYSTEM_PROMPT, /spawn_canvas|propose_canvas|put_mermaid/);
+  assert.doesNotMatch(MAIN_SYSTEM_PROMPT, /spawn_canvas|propose_canvas/);
+});
+
+test("main agent renders structured diagrams through Mermaid and other drawings as shapes", () => {
+  assert.match(
+    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
+    /sequence diagrams, state machines, and mindmaps go through put_mermaid/,
+  );
+  assert.match(
+    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
+    /pros\/cons columns, and additions to an existing board go through put_shapes/,
+  );
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /without pre-drawing its nodes/);
+  assert.doesNotMatch(MAIN_SYSTEM_PROMPT, /Mermaid rendering is not available/);
 });
 
 test("main agent distills research without overwriting user styling", () => {
@@ -35,27 +48,43 @@ test("main agent distills research without overwriting user styling", () => {
   assert.match(CANVAS_STYLE_GUIDANCE, /captured styles all take precedence/);
 });
 
-test("progressive drawing commits early with bounded repair and honest cancellation", () => {
+test("progressive drawing streams ordered batches with bounded repair and no review reads", () => {
   assert.ok(MAIN_SYSTEM_PROMPT.includes(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE));
-  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /at most 1–3 shapes/);
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /put_shapes accepts up to 12 shapes/);
+  assert.match(
+    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
+    /appears on the canvas as soon as it has been generated/,
+  );
+  assert.match(
+    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
+    /title\/root first, then nodes, then bound connectors/,
+  );
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /several drawing calls in one response/);
   assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /actual IDs and measured bounds/);
-  assert.match(
-    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
-    /Each successful tool call commits immediately/,
-  );
   assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /at most two correction attempts/);
-  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /never more than 3 shapes per batch/);
-  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /only one drawing tool call per response/);
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /resend only the uncommitted shapes/);
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /already-committed shapes remain/);
   assert.match(
     CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
-    /draw the root, then one child and its connector/,
+    /do not re-read the canvas to review a finished drawing/,
   );
-  assert.match(
-    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
-    /one message arrow and its short label at a time/,
-  );
-  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /already-committed batches remain/);
   assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /no speculative findings/);
+  assert.match(
+    CANVAS_PROGRESSIVE_DRAWING_GUIDANCE,
+    /draw in your first response, without calling get_canvas/,
+  );
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /after background research/);
+});
+
+test("main agent answers from its own knowledge and delegates only repository questions", () => {
+  assert.match(MAIN_SYSTEM_PROMPT, /Answer from your own knowledge by default/);
+  assert.match(MAIN_SYSTEM_PROMPT, /estimates, comparisons, decisions, pros\/cons/);
+  assert.match(MAIN_SYSTEM_PROMPT, /only when the answer depends on this repository/);
+  assert.match(MAIN_SYSTEM_PROMPT, /Never delegate a question you can answer now/);
+  assert.doesNotMatch(
+    MAIN_SYSTEM_PROMPT,
+    /comparisons, and substantial analysis with spawn_research/,
+  );
 });
 
 test("research is read-only, doc-first, bounded, and returns content rather than drawings", () => {
