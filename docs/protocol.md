@@ -53,7 +53,7 @@ A terminal run never becomes active again; retry creates another run. The browse
 
 ## Canvas request lifecycle
 
-1. A tool or proposal finalizer submits a page-scoped action.
+1. A main-agent canvas tool submits a page-scoped action.
 2. `CanvasConnection` assigns request identity and deadline and records the expected result schema.
 3. The browser validates the request and prepares mutations in an isolated SDK editor; reads remain available while imports wait.
 4. Before a mutation, the executor checks page, deadline, cancellation, and relevant record fingerprints.

@@ -543,7 +543,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
             )
           ) {
             throw new Error(
-              "Canvas changed during proposal preparation; no changes committed. Retry against fresh page state.",
+              "Canvas changed while the request was being prepared; no changes committed. Retry against fresh page state.",
             );
           }
 

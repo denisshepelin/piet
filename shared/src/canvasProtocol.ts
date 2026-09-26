@@ -348,7 +348,7 @@ const runBase = {
   runId: id,
   promptId: id,
   title: text,
-  kind: Type.Union([Type.Literal("research"), Type.Literal("canvas"), Type.Literal("response")]),
+  kind: Type.Union([Type.Literal("research"), Type.Literal("response")]),
   pageId: id,
   anchor,
   createdAt: number,

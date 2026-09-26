@@ -57,7 +57,7 @@ test("failed drawing stays visible until dismissed instead of disappearing", asy
       runId: "failed-icons",
       promptId: "failed-icons",
       title: "Draw gopher",
-      kind: "canvas",
+      kind: "response",
       pageId: browser.context.page.id,
       anchor: { x: 0, y: 0 },
       createdAt: Date.now(),

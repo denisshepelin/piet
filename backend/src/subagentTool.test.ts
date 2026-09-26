@@ -10,7 +10,6 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { type BackgroundSession, createSubagentTool, type ResearchResult } from "./subagentTool.js";
 import type { PromptCanvasContext, RunSnapshot, ServerMessage } from "@piet/protocol";
-import type { CanvasProposal, CanvasProposalTool } from "./canvasProposalTool.js";
 
 type Deferred<T> = {
   readonly promise: Promise<T>;
@@ -250,12 +249,7 @@ test("extracts only the last assistant message and reports the complete lifecycl
 
   const runtime = createSubagentTool({
     ...contextOptions(sink),
-    createSession: async (kind, proposalTool) => {
-      assert.equal(kind, "research");
-      assert.equal(proposalTool, undefined);
-
-      return session;
-    },
+    createSession: async () => session,
     onSessionEvent: (context, event) => observed.push({ context, event }),
   });
 
@@ -275,7 +269,7 @@ test("extracts only the last assistant message and reports the complete lifecycl
   if (!completed || completed.status !== "done") throw new Error("expected completed run");
   assert.equal(completed.result, "final answer");
   assert.deepEqual(observed[0], {
-    context: { runId: spawned.details.runId, promptId: "prompt:origin", kind: "research" },
+    context: { runId: spawned.details.runId, promptId: "prompt:origin" },
     event: {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -446,30 +440,6 @@ test("cancels while session initialization is pending without late results", asy
       .at(-1)?.status,
     "cancelled",
   );
-  runtime.dispose();
-});
-
-test("reports a canvas worker without propose_canvas as an error", async () => {
-  const sink = collect();
-  const session = new FakeSession();
-  session.onPrompt = (current) => current.finish("I forgot the proposal");
-
-  const runtime = createSubagentTool({
-    ...contextOptions(sink),
-    createSession: async () => session,
-  });
-
-  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
-    title: "missing proposal",
-    instruction: "prepare a drawing",
-  });
-  await waitFor(() => sink.updates().at(-1)?.status === "error");
-
-  const update = sink.updates().at(-1);
-
-  if (!update || update.status !== "error") throw new Error("expected proposal error");
-  assert.equal(update.error, "Canvas worker completed without a propose_canvas proposal.");
-  assert.equal(sink.results[0]?.error, update.error);
   runtime.dispose();
 });
 
@@ -711,136 +681,6 @@ test("times out active work and reports the deadline reason", async () => {
   runtime.dispose();
 });
 
-test("waits for finalizeResult before completing a canvas task and propagates cancellation", async () => {
-  const sink = collect();
-  const session = new FakeSession();
-  let proposal: CanvasProposal | undefined;
-  let finalizeSignal: AbortSignal | undefined;
-  const finalization = deferred<string>();
-
-  const runtime = createSubagentTool({
-    ...contextOptions(sink),
-    createSession: async (kind, proposalTool) => {
-      assert.equal(kind, "canvas");
-      assert.ok(proposalTool);
-      proposal = await executeProposal(proposalTool);
-
-      return session;
-    },
-    finalizeResult: async (result, signal) => {
-      finalizeSignal = signal;
-      assert.equal(result.proposal?.type, "shapes");
-
-      return { status: "done", text: await finalization.promise };
-    },
-  });
-
-  session.onPrompt = (current) => current.finish("prepared");
-  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
-    title: "draw",
-    instruction: "prepare a box",
-  });
-  await waitFor(() => finalizeSignal !== undefined);
-  assert.equal(sink.updates().at(-1)?.status, "running");
-  assert.deepEqual(proposal, { type: "shapes", shapes: [{ type: "geo", x: 20, y: 30 }] });
-
-  const canvasUpdate = sink.updates()[0];
-
-  if (!canvasUpdate) throw new Error("expected canvas run update");
-  runtime.cancel(canvasUpdate.runId);
-  await waitFor(() => finalizeSignal?.aborted === true);
-  finalization.resolve("cancelled finalization");
-  await waitFor(() => sink.updates().at(-1)?.status === "cancelled");
-  assert.equal(sink.results.length, 0);
-  runtime.dispose();
-});
-
-test("turns a rejected finalization into an error result", async () => {
-  const sink = collect();
-  const session = new FakeSession();
-  session.onPrompt = (current) => current.finish("prepared");
-
-  const runtime = createSubagentTool({
-    ...contextOptions(sink),
-    createSession: async (kind, proposalTool) => {
-      assert.equal(kind, "canvas");
-      assert.ok(proposalTool);
-      await executeProposal(proposalTool);
-
-      return session;
-    },
-    finalizeResult: async () => {
-      throw new Error("canvas commit rejected");
-    },
-  });
-
-  await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
-    title: "reject",
-    instruction: "prepare",
-  });
-  await waitFor(() => sink.updates().at(-1)?.status === "error");
-  const rejected = sink.updates().at(-1);
-
-  if (!rejected || rejected.status !== "error") throw new Error("expected finalization error");
-  assert.equal(rejected.error, "canvas commit rejected");
-  assert.equal(sink.results[0]?.error, "canvas commit rejected");
-  runtime.dispose();
-});
-
-for (const outcome of ["repair", "exhaust", "cancel"] as const) {
-  test(`canvas correction lifecycle: ${outcome}`, async () => {
-    const sink = collect();
-    const session = new FakeSession();
-    const instructions: string[] = [];
-    let attempts = 0;
-
-    const runtime = createSubagentTool({
-      ...contextOptions(sink),
-      createSession: async (_kind, proposalTool) => {
-        assert.ok(proposalTool);
-
-        return {
-          subscribe: session.subscribe.bind(session),
-          abort: session.abort.bind(session),
-          dispose: session.dispose.bind(session),
-          prompt: async (text) => {
-            instructions.push(text);
-            await executeProposal(proposalTool);
-            session.finish("Prepared drawing");
-          },
-        };
-      },
-      finalizeResult: async (result) => {
-        attempts++;
-        assert.ok(result.proposal);
-
-        if (outcome === "cancel") runtime.cancel(result.runId);
-
-        return outcome === "repair" && attempts === 2
-          ? { status: "done", text: "Verified and committed" }
-          : { status: "retry", feedback: "Canvas layout rejected; measured bottom is 320" };
-      },
-    });
-
-    await executeSpawn(findTool(runtime.tools, "spawn_canvas"), {
-      title: "Repair drawing",
-      instruction: "Draw",
-    });
-    const expected = outcome === "repair" ? "done" : outcome === "exhaust" ? "error" : "cancelled";
-    await waitFor(() => sink.updates().at(-1)?.status === expected);
-    assert.equal(attempts, outcome === "repair" ? 2 : outcome === "exhaust" ? 3 : 1);
-    assert.equal(new Set(sink.updates().map((run) => run.runId)).size, 1);
-
-    if (outcome !== "cancel") assert.match(instructions[1] ?? "", /measured bottom is 320/);
-    assert.equal(sink.results.length, outcome === "cancel" ? 0 : 1);
-    assert.equal(
-      sink.updates().filter((run) => run.status === "done").length,
-      outcome === "repair" ? 1 : 0,
-    );
-    runtime.dispose();
-  });
-}
-
 test("keeps active work bounded at four running and eight active tasks", async () => {
   const sink = collect();
   const sessions: FakeSession[] = [];
@@ -877,18 +717,3 @@ test("keeps active work bounded at four running and eight active tasks", async (
   for (const run of runs) runtime.cancel(run.details.runId);
   runtime.dispose();
 });
-
-const executeProposal = async (tool: CanvasProposalTool): Promise<CanvasProposal> => {
-  const result = await tool.execute(
-    "proposal-1",
-    {
-      type: "shapes",
-      shapes: [{ type: "geo", x: 20, y: 30 }],
-    },
-    undefined,
-    undefined,
-    unusedExtensionContext,
-  );
-
-  return result.details;
-};
