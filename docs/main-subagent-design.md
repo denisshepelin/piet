@@ -41,6 +41,8 @@ The main agent places real pictures with `put_image` instead of drawing them wit
 
 Tasks emit complete snapshots with `runId`, originating `promptId`, page ID, anchor, title, timestamps, sequence, and status. Research results retain the original request and canvas context even after intervening user turns. The main agent reads fresh state and draws findings itself, rather than delegating a second time.
 
+While any run of a request is active, the canvas shows a small animated Mondrian marker at the root question's anchor (right of the selection, else the pointer, else the viewport center). It keeps a constant screen size, follows the camera, ignores pointer input, and disappears when the request finishes. The main agent is told to start new standalone answers at that anchor when the space is free, so the answer lands where the marker promised; filling an existing board takes precedence.
+
 Main turns have a two-minute deadline. Research has four executing slots, eight active tasks, and a five-minute deadline including queue time. Cancellation and late-result isolation remain task-scoped. Failed tasks stay visible with retry/dismiss controls. Clean completions move to inspector history.
 
 ## Canvas safety

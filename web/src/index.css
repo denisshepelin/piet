@@ -554,3 +554,86 @@ button {
     width: min(280px, calc(100% - 20px));
   }
 }
+
+.piet-answer-indicators {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.piet-answer-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  grid-template-rows: 2fr 1fr 2fr;
+  grid-template-areas:
+    "red yellow"
+    "black yellow"
+    "black blue";
+  gap: 2px;
+  border: 2px solid var(--piet-black);
+  background: var(--piet-black);
+  box-shadow: 2px 2px 0 var(--piet-black);
+  animation: piet-answer-indicator-arrive 180ms ease-out;
+}
+
+.piet-answer-indicator__cell {
+  background: var(--piet-ground);
+  animation: piet-answer-indicator-fill 1.8s steps(1, end) infinite;
+}
+
+.piet-answer-indicator__cell--red {
+  grid-area: red;
+  --piet-indicator-fill: var(--piet-red);
+}
+
+.piet-answer-indicator__cell--yellow {
+  grid-area: yellow;
+  --piet-indicator-fill: var(--piet-yellow);
+  animation-delay: 0.45s;
+}
+
+.piet-answer-indicator__cell--blue {
+  grid-area: blue;
+  --piet-indicator-fill: var(--piet-blue);
+  animation-delay: 0.9s;
+}
+
+.piet-answer-indicator__cell--black {
+  grid-area: black;
+  --piet-indicator-fill: var(--piet-black);
+  animation-delay: 1.35s;
+}
+
+@keyframes piet-answer-indicator-fill {
+  0% {
+    background: var(--piet-indicator-fill);
+  }
+
+  45% {
+    background: var(--piet-ground);
+  }
+}
+
+@keyframes piet-answer-indicator-arrive {
+  from {
+    opacity: 0;
+    scale: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piet-answer-indicator,
+  .piet-answer-indicator__cell {
+    animation: none;
+  }
+
+  .piet-answer-indicator__cell {
+    background: var(--piet-indicator-fill);
+  }
+}

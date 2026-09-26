@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunSnapshot } from "@piet/protocol";
-import { groupCanvasRequests } from "./canvasRequestGroups.ts";
+import { activeAnswerAnchors, groupCanvasRequests } from "./canvasRequestGroups.ts";
 
 const root: RunSnapshot = {
   runId: "question:one",
@@ -79,4 +79,26 @@ test("retry reopens the original request without creating another root card", ()
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.title, root.title);
   assert.deepEqual(groups[0]?.activeRuns, [retry]);
+});
+
+test("answer anchors mark active requests on the current page at the root question's anchor", () => {
+  const moved: RunSnapshot = { ...worker, anchor: { x: 900, y: 900 } };
+
+  const otherPage: RunSnapshot = {
+    ...worker,
+    runId: "question:two",
+    promptId: "question:two",
+    pageId: "page:two",
+  };
+
+  const finished: RunSnapshot = {
+    ...root,
+    runId: "question:three",
+    promptId: "question:three",
+  };
+
+  assert.deepEqual(activeAnswerAnchors([root, moved, otherPage, finished], "page:one"), [
+    { promptId: "question:one", title: "Should I switch to Go?", anchor: { x: 10, y: 20 } },
+  ]);
+  assert.deepEqual(activeAnswerAnchors([root], "page:one"), []);
 });

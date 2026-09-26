@@ -2,6 +2,7 @@ import { createContext, useContext, type ReactElement, type ReactNode } from "re
 import type { TLComponents } from "tldraw";
 import type { AgentChat } from "./useAgentSocket.ts";
 import { CanvasComposer } from "./CanvasComposer.tsx";
+import { CanvasAnswerIndicators } from "./CanvasAnswerIndicators.tsx";
 import { CanvasRequestCards } from "./CanvasRequestCards.tsx";
 
 const CanvasUiChatContext = createContext<AgentChat | null>(null);
@@ -25,12 +26,13 @@ const useCanvasUiChat = (): AgentChat => {
   return chat;
 };
 
-/** Stable tldraw front layer for the composer and screen-fixed ongoing requests. */
+/** Stable tldraw front layer for answer indicators, the composer, and screen-fixed ongoing requests. */
 export const CanvasInFrontOfTheCanvas = (): ReactElement => {
   const chat = useCanvasUiChat();
 
   return (
     <>
+      <CanvasAnswerIndicators runs={chat.runs} />
       <CanvasRequestCards runs={chat.runs} actions={chat} />
       <CanvasComposer chat={chat} />
     </>
