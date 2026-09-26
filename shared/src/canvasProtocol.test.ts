@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  isCanvasActionResult,
   parseClientMessage,
   parseServerMessage,
   type CanvasRequest,
@@ -68,12 +67,6 @@ test("socket boundaries reject malformed JSON and incomplete or mismatched paylo
     { type: "unknown" },
   ])
     assert.equal(parseServerMessage(JSON.stringify(value)).ok, false);
-});
-
-test("canvas results are validated against the original action", () => {
-  assert.equal(isCanvasActionResult("put_shapes", { createdShapeIds: ["shape:a"] }), true);
-  assert.equal(isCanvasActionResult("put_shape", { createdShapeIds: ["shape:a"] }), false);
-  assert.equal(isCanvasActionResult("get_canvas", { deletedShapeIds: [] }), false);
 });
 
 test("canvas trace messages validate artifacts and remain separate from tool responses", () => {

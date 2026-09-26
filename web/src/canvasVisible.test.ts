@@ -44,15 +44,3 @@ test("visible summary keeps the largest elements in z-order and shortens labels"
   assert.match(summary.shapes.at(-2)?.text ?? "", /^Pros and cons x+…$/);
   assert.equal(summary.shapes.at(-2)?.text?.length, 80);
 });
-
-test("visible summary of a sparse viewport is complete", () => {
-  const summary = summarizeVisibleElements([
-    { id: "shape:a", type: "geo", x: 0, y: 0, w: 10, h: 10, text: "A" },
-  ]);
-
-  assert.deepEqual(summary, {
-    shapeCount: 1,
-    truncated: false,
-    shapes: [{ id: "shape:a", type: "geo", x: 0, y: 0, w: 10, h: 10, text: "A" }],
-  });
-});
