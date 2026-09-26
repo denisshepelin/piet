@@ -32,3 +32,23 @@ export const groupCanvasRequests = (runs: readonly RunSnapshot[]): CanvasRequest
     };
   });
 };
+
+/** A pending answer location, marked on the canvas while its request is still running. */
+export type CanvasAnswerAnchor = {
+  readonly promptId: string;
+  readonly title: string;
+  readonly anchor: RunSnapshot["anchor"];
+};
+
+/** Anchors of active requests on one page, taken from the root question's submission point. */
+export const activeAnswerAnchors = (
+  runs: readonly RunSnapshot[],
+  pageId: string,
+): CanvasAnswerAnchor[] =>
+  groupCanvasRequests(runs).flatMap((request) => {
+    const root = request.runs.find((run) => run.runId === request.promptId) ?? request.runs[0];
+
+    return request.activeRuns.length > 0 && root?.pageId === pageId
+      ? [{ promptId: request.promptId, title: request.title, anchor: root.anchor }]
+      : [];
+  });

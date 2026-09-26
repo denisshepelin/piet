@@ -112,3 +112,8 @@ test("main agent places real pictures from image search, web pages, or local fil
   assert.match(MAIN_SYSTEM_PROMPT, /answer general knowledge without searching/);
   assert.match(RESEARCH_SYSTEM_PROMPT, /list their absolute paths/);
 });
+
+test("new standalone answers start at the pending-answer marker", () => {
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /pending-answer marker at the context anchor/);
+  assert.match(CANVAS_PROGRESSIVE_DRAWING_GUIDANCE, /otherwise in the nearest free space/);
+});

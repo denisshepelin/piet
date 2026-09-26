@@ -132,3 +132,53 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
   await expect(card).toBeVisible();
   expect(await card.boundingBox()).toEqual(beforeZoom);
 });
+
+test("pending answer marker sits at the request anchor, follows the camera, and clears when done", async ({
+  page,
+}) => {
+  const browser = new TaskBrowser(page);
+  await browser.open();
+
+  if (!browser.context) throw new Error("Missing canvas context");
+
+  const run: RunSnapshot = {
+    runId: "prompt:marker",
+    promptId: "prompt:marker",
+    title: "Auth flow",
+    kind: "response",
+    pageId: browser.context.page.id,
+    anchor: { x: 240, y: 220 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    sequence: 1,
+    status: "running",
+    activity: "Researching",
+  };
+
+  browser.send({ type: "run_update", run });
+
+  const marker = page.getByRole("status", { name: "Answer for Auth flow will appear here" });
+  await expect(marker).toBeVisible();
+  await expect.poll(async () => (await marker.boundingBox())?.width).toBe(30);
+  const before = await marker.boundingBox();
+  const canvasBounds = await page.locator(".tl-canvas").boundingBox();
+
+  if (!before || !canvasBounds) throw new Error("Marker or canvas has no screen bounds");
+  expect(before).toMatchObject({ x: canvasBounds.x + 240, y: canvasBounds.y + 220 });
+  await page.mouse.move(canvasBounds.x + 700, canvasBounds.y + 600);
+  await page.mouse.wheel(40, 30);
+
+  await expect
+    .poll(async () => {
+      const after = await marker.boundingBox();
+
+      return after ? [Math.round(after.x - before.x), Math.round(after.y - before.y)] : null;
+    })
+    .toEqual([-40, -30]);
+
+  browser.send({
+    type: "run_update",
+    run: { ...run, sequence: 2, updatedAt: Date.now(), status: "done", result: "Drawn" },
+  });
+  await expect(marker).toHaveCount(0);
+});
