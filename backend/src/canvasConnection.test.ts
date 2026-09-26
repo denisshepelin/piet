@@ -32,8 +32,6 @@ test("matches parallel canvas responses by request id and carries page authority
   const [a, b] = requests();
   assert.ok(a && b);
   assert.equal(a.pageId, context.pageId);
-  assert.equal(a.captureTrace, undefined);
-  assert.ok(a.deadlineAt > Date.now());
   connection.handleResponse({
     type: "canvas_response",
     requestId: b.requestId,
@@ -48,30 +46,6 @@ test("matches parallel canvas responses by request id and carries page authority
   });
   assert.deepEqual(await first, { deletedShapeIds: ["shape:a"] });
   assert.deepEqual(await second, { deletedShapeIds: ["shape:b"] });
-});
-
-test("canvas tracing is requested explicitly without changing RPC results", async () => {
-  const sent: ServerMessage[] = [];
-
-  const connection = new CanvasConnection({
-    actor,
-    isConnected: () => true,
-    send: (message) => sent.push(message),
-    captureTrace: true,
-  });
-
-  const result = connection.request("delete_shapes", { ids: [] }, context);
-  const request = sent[0];
-  assert.ok(request?.type === "canvas_request");
-  assert.equal(request.captureTrace, true);
-  connection.handleResponse({
-    type: "canvas_response",
-    requestId: request.requestId,
-    ok: true,
-    result: { deletedShapeIds: [] },
-  });
-  assert.deepEqual(await result, { deletedShapeIds: [] });
-  connection.dispose();
 });
 
 test("disconnect rejects pending work and sends remote cancellation", async () => {

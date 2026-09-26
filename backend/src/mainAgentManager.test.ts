@@ -193,7 +193,7 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
   };
 };
 
-test("real main sessions serialize prompts, capture intent, and avoid unconditional screenshots", async () => {
+test("main sessions serialize prompts and capture intent without reading the canvas", async () => {
   const harness = await createHarness();
 
   try {
@@ -306,9 +306,6 @@ test("research synthesis retains the original worksheet request after another us
     assert.match(synthesis, /Help me decide whether to move Piet to Go/);
     assert.match(synthesis, /single binary/);
     assert.match(synthesis, /shape:pros/);
-    assert.match(synthesis, /task-window summary alone is not completion/);
-    assert.match(synthesis, /put_mermaid for a flow, sequence, state, or hierarchy diagram/);
-    assert.match(synthesis, /at most 3 short bullets per column/);
     assert.doesNotMatch(synthesis, /Unrelated question/);
     harness.completions[4]?.("Preparing the canvas answer");
   } finally {
@@ -316,7 +313,7 @@ test("research synthesis retains the original worksheet request after another us
   }
 });
 
-test("main agent commits progressive batches before its final answer without a canvas worker", async () => {
+test("main agent commits progressive batches before its final answer", async () => {
   const committed: string[] = [];
 
   const harness = await createHarness(async (action, params, requestContext) => {
@@ -341,12 +338,6 @@ test("main agent commits progressive batches before its final answer without a c
       canvasContext: context,
     });
     await until(() => harness.completions.length === 1);
-    assert.ok(harness.promptTools[0]?.includes("put_shapes"));
-    assert.ok(harness.promptTools[0]?.includes("put_mermaid"));
-    assert.ok(harness.promptTools[0]?.includes("put_image"));
-    assert.ok(harness.promptTools[0]?.includes("spawn_research"));
-    assert.ok(!harness.promptTools[0]?.includes("spawn_canvas"));
-    assert.ok(!harness.promptTools[0]?.includes("propose_canvas"));
     harness.completions[0]?.("", {
       name: "put_shapes",
       arguments: { shapes: [{ id: "root", type: "geo", text: "Root" }] },

@@ -443,73 +443,42 @@ test("cancels while session initialization is pending without late results", asy
   runtime.dispose();
 });
 
-test("reports provider stop errors even when prompt resolves", async () => {
-  const sink = collect();
-  const session = new FakeSession();
-  session.onPrompt = (current) => {
-    current.emit({ type: "message_start", message: assistantMessage() });
-    current.emit({
-      type: "message_end",
-      message: assistantMessage({
-        content: [{ type: "text", text: "partial" }],
-        stopReason: "error",
-        errorMessage: "provider rejected the request",
-      }),
+for (const stopReason of ["error", "aborted"] as const) {
+  test(`reports provider ${stopReason} stop reasons as errors even when prompt resolves`, async () => {
+    const sink = collect();
+    const session = new FakeSession();
+    session.onPrompt = (current) => {
+      current.emit({ type: "message_start", message: assistantMessage() });
+      current.emit({
+        type: "message_end",
+        message: assistantMessage({
+          content: [{ type: "text", text: "partial" }],
+          stopReason,
+          errorMessage: `provider ${stopReason} the request`,
+        }),
+      });
+      current.promptCompletion.resolve();
+    };
+
+    const runtime = createSubagentTool({
+      ...contextOptions(sink),
+      createSession: async () => session,
     });
-    current.promptCompletion.resolve();
-  };
 
-  const runtime = createSubagentTool({
-    ...contextOptions(sink),
-    createSession: async () => session,
-  });
-
-  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
-    title: "provider error",
-    instruction: "inspect",
-  });
-  await waitFor(() => sink.updates().at(-1)?.status === "error");
-
-  const update = sink.updates().at(-1);
-
-  if (!update || update.status !== "error") throw new Error("expected provider error");
-  assert.equal(update.error, "provider rejected the request");
-  assert.equal(sink.results[0]?.result, undefined);
-  runtime.dispose();
-});
-
-test("reports provider aborted stop reasons as errors when not locally cancelled", async () => {
-  const sink = collect();
-  const session = new FakeSession();
-  session.onPrompt = (current) => {
-    current.emit({ type: "message_start", message: assistantMessage() });
-    current.emit({
-      type: "message_end",
-      message: assistantMessage({
-        stopReason: "aborted",
-        errorMessage: "provider aborted the request",
-      }),
+    await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+      title: `provider ${stopReason}`,
+      instruction: "inspect",
     });
-    current.promptCompletion.resolve();
-  };
+    await waitFor(() => sink.updates().at(-1)?.status === "error");
 
-  const runtime = createSubagentTool({
-    ...contextOptions(sink),
-    createSession: async () => session,
+    const update = sink.updates().at(-1);
+
+    if (!update || update.status !== "error") throw new Error("expected provider error");
+    assert.equal(update.error, `provider ${stopReason} the request`);
+    assert.equal(sink.results[0]?.result, undefined);
+    runtime.dispose();
   });
-
-  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
-    title: "provider aborted",
-    instruction: "inspect",
-  });
-  await waitFor(() => sink.updates().at(-1)?.status === "error");
-
-  const update = sink.updates().at(-1);
-
-  if (!update || update.status !== "error") throw new Error("expected provider abort error");
-  assert.equal(update.error, "provider aborted the request");
-  runtime.dispose();
-});
+}
 
 test("deduplicates repeated streaming activity", async () => {
   const sink = collect();
