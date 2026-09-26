@@ -745,7 +745,7 @@ test("root request cards stay fixed during zoom and automatically move completed
     runId: "task:test",
     promptId: "prompt:test",
     title: "Architecture sketch",
-    kind: "canvas",
+    kind: "response",
     pageId: browser.context.page.id,
     anchor: { x: 200, y: 200 },
     createdAt: Date.now(),

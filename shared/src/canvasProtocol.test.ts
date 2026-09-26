@@ -12,7 +12,7 @@ const run: RunSnapshot = {
   runId: "run:a",
   promptId: "prompt:a",
   title: "Draw",
-  kind: "canvas",
+  kind: "response",
   pageId: "page:a",
   anchor: { x: 12, y: 24 },
   createdAt: 1,

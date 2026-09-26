@@ -23,10 +23,10 @@ Read `events.jsonl` with ordinary file/search tools:
 - `ws.out.canvas_request` / `ws.in.canvas_response` join canvas operations by `requestId` and retain parameters, outcomes, and errors.
 - `canvas.trace` links debug artifacts to the same `requestId`, `contextId`, and `pageId`. `capturedAt` is the browser snapshot time, not the later PNG completion time.
 - `ws.out.run_update` joins background work to its originating `promptId` through `runId`.
-- `worker.session_event` retains non-streaming worker events with `runId`, `promptId`, and worker kind. Main SDK events use the `agent.*` prefix. Completed messages retain provider usage/cost fields when supplied; Piet does not calculate a summary.
+- `worker.session_event` retains non-streaming research worker events with `runId` and `promptId`. Main SDK events use the `agent.*` prefix. Completed messages retain provider usage/cost fields when supplied; Piet does not calculate a summary.
 - `web.canvas_request_ok` and `web.canvas_request_error` include browser execution duration in milliseconds. Streaming deltas are omitted; complete message/tool payloads are retained without the old 2,000-character truncation.
 
-Canvas context identities follow the existing runtime: main tools use submission-time `capturedAt`; worker proposal commits use `runId`. Follow the prompt's canvas context or task update to join these to the originating user request.
+Canvas context identities use the submission-time `capturedAt` of the main turn's prompt. Follow the prompt's canvas context or task update to join these to the originating user request.
 
 PNG image objects are replaced by `{ mimeType, artifact, bytes, ...metadata }`. Artifact paths are relative to the session directory and derived from content hashes, never browser-supplied filenames. Repeated PNGs share one file. Open the referenced PNG with the coding agent's image-reading tool.
 
@@ -34,7 +34,7 @@ PNG image objects are replaced by `{ mimeType, artifact, bytes, ...metadata }`. 
 
 - **Image-enabled reads:** the exact PNG returned to the model is extracted from the normal response, with its scope, bounds, and structured shape context. No second render is substituted. An empty read has no model PNG, matching existing tool behavior; it receives a separate whole-page `read` debug capture.
 - **Image-disabled reads:** an additional whole-page `read` debug capture is recorded without adding an image to the model's response.
-- **Mutations:** whole-page `before` and `after` captures surround the synchronous live commit, after asynchronous preparation and conflict checks. This covers native shapes, batches/proposals, Mermaid, images, strokes, updates, moves, and deletes.
+- **Mutations:** whole-page `before` and `after` captures surround the synchronous live commit, after asynchronous preparation and conflict checks. This covers native shapes, batches, Mermaid, images, strokes, updates, moves, and deletes.
 - **Camera operations:** `before` and `after` captures retain viewport metadata; the image itself remains a whole-page export.
 - **Failures:** an `error` capture attempts to preserve the active target page when the operation fails. Wrong-page operations produce an explicit skipped capture rather than a screenshot of another page. The actual operation error remains in its canvas response.
 

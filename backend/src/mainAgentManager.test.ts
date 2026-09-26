@@ -362,11 +362,6 @@ test("main agent commits progressive batches before its final answer without a c
     assert.deepEqual(committed, ["shape:root", "shape:branch"]);
     harness.completions[2]?.("Drew the tree.");
     await until(() => harness.sent.some((message) => message.type === "prompt_done"));
-    assert.ok(
-      !harness.sent.some(
-        (message) => message.type === "run_update" && message.run.kind === "canvas",
-      ),
-    );
   } finally {
     harness.manager.dispose();
   }

@@ -10,7 +10,6 @@ import {
   type ModelRef,
   type ModelThinkingLevel,
   type PromptCanvasContext,
-  type RunSnapshot,
 } from "@piet/protocol";
 import {
   createChatState,
@@ -22,9 +21,6 @@ import {
 } from "./agentChatState.ts";
 
 export type { ChatMessage } from "./agentChatState.ts";
-
-/** Compatibility name for task windows; runs can represent research, drawing, or a response. */
-export type SubagentRun = RunSnapshot;
 
 /** Canvas execution receives connection/request cancellation, including disconnect during preparation. */
 export type CanvasRequestHandler = (

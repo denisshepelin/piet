@@ -186,7 +186,7 @@ export class MainAgentManager {
         logEvent({
           source: "backend",
           connId,
-          agent: context.kind,
+          agent: "research",
           event: "worker.session_event",
           data: { ...context, event },
         });
