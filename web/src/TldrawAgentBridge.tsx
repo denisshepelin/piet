@@ -298,6 +298,28 @@ const encodeStrokeSegment = (
   return { type: "free", path: b64Vecs.encodePoints(localPoints, dim), dim };
 };
 
+const DEFAULT_IMAGE_EXTENT = 400;
+
+type ImageDisplaySize = { w: number; h: number };
+
+const imageDisplaySize = (
+  natural: ImageDisplaySize,
+  w: number | undefined,
+  h: number | undefined,
+): ImageDisplaySize => {
+  const aspect = natural.h > 0 && natural.w > 0 ? natural.w / natural.h : 1;
+
+  if (w !== undefined && h !== undefined) return { w, h };
+
+  if (w !== undefined) return { w, h: w / aspect };
+
+  if (h !== undefined) return { w: h * aspect, h };
+
+  const scale = Math.min(1, DEFAULT_IMAGE_EXTENT / Math.max(natural.w, natural.h, 1));
+
+  return { w: natural.w * scale, h: natural.h * scale };
+};
+
 const imageFileName = (src: string, requested: string | undefined): string => {
   if (requested?.trim()) return requested.trim();
 
@@ -782,6 +804,7 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
 
       let createdElementId = "";
       let createdAssetId: string | undefined;
+      let imageBounds: CanvasBounds | undefined;
       await stageDocument(request, signal, async (stagingEditor) => {
         const response = await fetch(src, signal ? { signal } : undefined);
 
@@ -822,38 +845,34 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
         createdElementId = element.id;
         const bounds = stagingEditor.getShapePageBounds(element);
 
+        if (!bounds) throw new Error("canvas image import produced no bounds");
+        const size = imageDisplaySize(bounds, w, h);
+
+        const target = {
+          x: x ?? bounds.center.x - size.w / 2,
+          y: y ?? bounds.center.y - size.h / 2,
+        };
+
+        const position = pageDeltaToElementPosition(stagingEditor, element, {
+          x: target.x - bounds.x,
+          y: target.y - bounds.y,
+        });
+
         const partial: CanvasJsonObject = {
           id: element.id,
           type: element.type,
+          x: position.x,
+          y: position.y,
           meta: withActorMeta(element.meta, request.actor),
+          props:
+            altText === undefined ? { w: size.w, h: size.h } : { w: size.w, h: size.h, altText },
         };
-
-        if (x !== undefined || y !== undefined) {
-          if (!bounds) throw new Error("canvas image import produced no bounds");
-          const target = { x: x ?? bounds.x, y: y ?? bounds.y };
-
-          const position = pageDeltaToElementPosition(stagingEditor, element, {
-            x: target.x - bounds.x,
-            y: target.y - bounds.y,
-          });
-
-          partial.x = position.x;
-          partial.y = position.y;
-        }
-
-        if (altText !== undefined || w !== undefined || h !== undefined) {
-          const imageProps: CanvasJsonObject = {};
-
-          if (altText !== undefined) imageProps.altText = altText;
-
-          if (w !== undefined) imageProps.w = w;
-
-          if (h !== undefined) imageProps.h = h;
-          partial.props = imageProps;
-        }
 
         // SAFETY: tldraw validates the image partial at this dynamic shape boundary.
         stagingEditor.updateShapes([partial as TLElementPartial]);
+        const placed = stagingEditor.getShapePageBounds(element.id);
+
+        if (placed) imageBounds = roundCanvasBounds(placed);
         const assetId = isRecord(element.props) ? element.props.assetId : undefined;
 
         if (isCanvasJsonString(assetId)) createdAssetId = assetId;
@@ -862,6 +881,8 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
       const result: PutImageResult = { createdShapeId: createdElementId };
 
       if (createdAssetId) result.createdAssetId = createdAssetId;
+
+      if (imageBounds) result.bounds = imageBounds;
 
       return result;
     };

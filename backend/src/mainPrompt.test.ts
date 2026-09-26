@@ -104,3 +104,11 @@ test("shape contract calls out app-specific text and sizing rules", () => {
   assert.match(MAIN_SYSTEM_PROMPT, /spawn_research/);
   assert.match(MAIN_SYSTEM_PROMPT, /Never change the shared camera unless explicitly asked/);
 });
+
+test("main agent places real pictures from image search, web pages, or local files", () => {
+  assert.match(MAIN_SYSTEM_PROMPT, /place an actual picture with put_image/);
+  assert.match(MAIN_SYSTEM_PROMPT, /Use web search to find an image/);
+  assert.match(MAIN_SYSTEM_PROMPT, /accepts a page URL and uses its preview image/);
+  assert.match(MAIN_SYSTEM_PROMPT, /answer general knowledge without searching/);
+  assert.match(RESEARCH_SYSTEM_PROMPT, /list their absolute paths/);
+});

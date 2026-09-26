@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import type { CanvasRequestContext, RequestCanvas } from "./canvasConnection.js";
+import { resolveImageSource } from "./imageSource.js";
 import {
   canvasActionSchemas,
   isCanvasJsonNumber,
@@ -448,6 +449,7 @@ const canvasMutationReferences = (
 export const createCanvasTools = (
   connectionRequest: RequestCanvas,
   getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
+  resolveImage: typeof resolveImageSource = resolveImageSource,
 ) => {
   const observations = new Map<string, Record<string, string>>();
   const knownIds = new Set<string>();
@@ -807,15 +809,18 @@ export const createCanvasTools = (
     name: "put_image",
     label: "Put Image",
     description:
-      "Add a raster or SVG image as a native tldraw image shape. The browser imports and persists the source through tldraw's asset pipeline. src must be a data URL or a browser-fetchable http(s) URL. x/y set the bounds' top-left and w/h set its displayed size.",
-    promptSnippet: "Add an image to the tldraw canvas from a data URL or fetchable URL.",
+      "Place an image on the canvas as a native tldraw image shape. src may be a direct image URL, a web page URL (its preview image is used), a local file path (absolute, ~/, or relative to the backend directory), or a data URL. The backend fetches or reads the image, so any reachable URL works. x/y set the top-left; give w or h to size it (the other side keeps the aspect ratio), otherwise it is fitted to about 400px.",
+    promptSnippet:
+      "Place an image from a URL, web page, local file, or data URL on the tldraw canvas.",
     promptGuidelines: [
-      "Use a data URL for generated SVG or image data; use an http(s) URL only when the browser can fetch it with CORS enabled.",
+      "Use put_image for pictures of real people, places, and objects (found with web search), local screenshots or assets, and generated SVG data URLs for icons or charts.",
       "Provide concise altText that describes the image's meaning, not its visual styling.",
-      "After insertion, inspect with get_canvas and move or resize the resulting image shape with update_shape if needed.",
+      "Place images in free space from the visible list; the result reports the image bounds, so do not re-read the canvas to check it.",
     ],
     parameters: Type.Object({
-      src: Type.String({ description: "Image data URL or browser-fetchable http(s) URL." }),
+      src: Type.String({
+        description: "Image URL, web page URL, local file path, or data URL.",
+      }),
       name: Type.Optional(Type.String({ description: "Filename used for the persisted asset." })),
       mimeType: Type.Optional(
         Type.String({ description: "Image MIME type when src does not provide one." }),
@@ -827,16 +832,27 @@ export const createCanvasTools = (
       h: Type.Optional(Type.Number({ minimum: 1, description: "Displayed height." })),
     }),
     async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("put_image", params, signal);
+      const image = await resolveImage(params.src, signal);
+
+      const result = await requestCanvas(
+        "put_image",
+        {
+          ...params,
+          src: image.src,
+          name: params.name ?? image.name,
+          mimeType: params.mimeType ?? image.mimeType,
+        },
+        signal,
+      );
+
+      const lines = [
+        `Created image shape ${result.createdShapeId}${result.createdAssetId ? ` with asset ${result.createdAssetId}` : ""} from ${image.origin} (${image.bytes} bytes).`,
+        ...(result.bounds ? [`Bounds: ${JSON.stringify(result.bounds)}`] : []),
+      ];
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `Created image shape ${result.createdShapeId}${result.createdAssetId ? ` with asset ${result.createdAssetId}` : ""}`,
-          },
-        ],
-        details: result,
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: { ...result, origin: image.origin },
       };
     },
   });

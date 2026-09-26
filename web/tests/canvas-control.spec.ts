@@ -623,6 +623,21 @@ test("successful image and Mermaid imports remain editable and have isolated und
   expect(undone.shapes.map((element) => element.id)).toEqual([image.createdShapeId]);
 });
 
+test("image imports keep their aspect ratio and default to a readable size", async ({ page }) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+
+  const src = `data:image/svg+xml;base64,${Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400"><rect width="800" height="400" fill="red"/></svg>',
+  ).toString("base64")}`;
+
+  const sized = await browser.request("put_image", { src, x: 80, y: 80, w: 200 });
+  expect(sized.bounds).toEqual({ x: 80, y: 80, w: 200, h: 100 });
+
+  const fitted = await browser.request("put_image", { src, x: 400, y: 80 });
+  expect(fitted.bounds).toEqual({ x: 400, y: 80, w: 400, h: 200 });
+});
+
 test("page-space movement works for a child of a rotated frame", async ({ page }) => {
   const browser = new CanvasBrowser(page);
   await browser.open();

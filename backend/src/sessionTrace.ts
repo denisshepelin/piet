@@ -6,6 +6,8 @@ import type { LogEvent } from "./logger.js";
 
 const MAX_EVENT_BYTES = 24 * 1024 * 1024;
 
+const MAX_DATA_URL_CHARS = 4096;
+
 const MAX_QUEUE_BYTES = 64 * 1024 * 1024;
 
 const MAX_SESSION_BYTES = 512 * 1024 * 1024;
@@ -73,6 +75,13 @@ export const createSessionTrace = (options: {
           },
           (key, value) => {
             if (SECRET_KEY.test(key)) return "[redacted]";
+
+            if (
+              isCanvasJsonString(value) &&
+              value.length > MAX_DATA_URL_CHARS &&
+              value.startsWith("data:")
+            )
+              return `${value.slice(0, value.indexOf(",") + 1)}[${value.length} chars elided]`;
 
             if (!(value instanceof Object)) return value;
 

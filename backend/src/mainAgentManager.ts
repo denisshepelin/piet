@@ -31,6 +31,7 @@ import { formatCanvasModelContext } from "./canvasModelContext.js";
 import { CANVAS_RESEARCH_SUMMARY_GUIDANCE } from "./mainPrompt.js";
 import { subscribeSessionLogging, type LogEvent } from "./logger.js";
 import { createSubagentTool, type BackgroundTools, type ResearchResult } from "./subagentTool.js";
+import { withHostedWebSearch } from "./webSearch.js";
 
 type MainAgentManagerOptions = {
   actor: CanvasActor;
@@ -308,6 +309,7 @@ export class MainAgentManager {
     }
 
     this.#mainSession = session;
+    session.agent.onPayload = withHostedWebSearch;
     const unsubscribeEvents = session.subscribe((event) => this.#forwardEvent(event));
     const unsubscribeLog = subscribeSessionLogging(session, "main", connId, logEvent);
     this.#disposeRuntime = () => {

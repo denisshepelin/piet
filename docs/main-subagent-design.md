@@ -31,6 +31,12 @@ Committed shapes stay visible while later shapes are generated or corrected. Can
 
 Only research is asynchronous. The main session is serial while drawing; new user requests queue until it finishes or is cancelled. The main agent remains available after delegating research and ending its acknowledgement turn. User requests take priority over queued research synthesis.
 
+## Images
+
+The main agent places real pictures with `put_image` instead of drawing them with shapes. It finds them with the provider's hosted web search, added to OpenAI Responses API payloads (`openai-codex`, `openai`, Azure) through the session's `onPayload` hook. Search adds several seconds, so the prompt reserves it for finding images and explicitly current information.
+
+`put_image` resolves its `src` in the backend: a direct image URL, a web page URL (its `og:image`/Twitter/`image_src` preview), a local path (absolute, `~/`, `file://`, or relative to the backend directory), or a data URL. The backend sends the browser a data URL, so cross-origin restrictions do not apply. There is no host or path filtering; the only limit is 20 MB per image, which keeps the base64 message under the 32 MB socket limit. The browser keeps the image's aspect ratio when only `w` or `h` is given, fits unsized images to 400px on their longest side, and returns the placed bounds. Session traces elide data URLs longer than 4 KB. Research workers list relevant repository image paths so the main agent can place them.
+
 ## Task lifecycle
 
 Tasks emit complete snapshots with `runId`, originating `promptId`, page ID, anchor, title, timestamps, sequence, and status. Research results retain the original request and canvas context even after intervening user turns. The main agent reads fresh state and draws findings itself, rather than delegating a second time.
