@@ -202,7 +202,11 @@ const pathResult = Type.Object({
   appended: Type.Boolean(),
 });
 
-const imageResult = Type.Object({ createdShapeId: id, createdAssetId: Type.Optional(id) });
+const imageResult = Type.Object({
+  createdShapeId: id,
+  createdAssetId: Type.Optional(id),
+  bounds: Type.Optional(bounds),
+});
 
 const updateResult = Type.Object({ updatedShapeId: id, ...bindingFields });
 

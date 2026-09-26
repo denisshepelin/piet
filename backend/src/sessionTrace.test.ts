@@ -118,3 +118,25 @@ test("unwritable trace paths never reject or fail the caller", async (t) => {
   await assert.doesNotReject(trace.close());
   await assert.doesNotReject(trace.close());
 });
+
+test("session trace elides large data URLs but keeps their media type", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "piet-session-trace-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const trace = createSessionTrace({ directory, now, mirrorStdout: false, manifest: {} });
+  const src = `data:image/jpeg;base64,${"A".repeat(10_000)}`;
+  trace.logEvent({
+    source: "backend",
+    connId: "c",
+    event: "put_image",
+    data: { src, small: "data:x" },
+  });
+  await trace.close();
+
+  const [event] = (await readFile(join(directory, "events.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+
+  assert.equal(event.data.src, `data:image/jpeg;base64,[${src.length} chars elided]`);
+  assert.equal(event.data.small, "data:x");
+});
