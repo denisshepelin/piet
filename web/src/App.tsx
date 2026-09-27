@@ -3,6 +3,8 @@ import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 import { ChatSidebar } from "./ChatSidebar.tsx";
 import { canvasUiComponents, CanvasUiProvider } from "./CanvasUiLayer.tsx";
+import { PietMark } from "./PietMark.tsx";
+import { PietWordmark } from "./PietWordmark.tsx";
 import { TldrawAgentBridge } from "./TldrawAgentBridge.tsx";
 import { useAgentSocket } from "./useAgentSocket.ts";
 
@@ -27,7 +29,8 @@ export const App = (): ReactElement => {
             aria-label={inspectorOpen ? "Close Piet inspector" : "Open Piet inspector"}
             aria-pressed={inspectorOpen}
           >
-            {inspectorOpen ? "close inspector" : "inspector"}
+            <PietMark size={30} active={chat.busy} />
+            <PietWordmark />
           </button>
           {inspectorOpen && <ChatSidebar chat={chat} onClose={() => setInspectorOpen(false)} />}
         </Tldraw>

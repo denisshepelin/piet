@@ -3,7 +3,7 @@ import { useEditor } from "tldraw";
 import type { AgentChat } from "./useAgentSocket.ts";
 import { PushToTalkButton } from "./PushToTalkButton.tsx";
 
-/** Voice-only canvas intent control with task feedback and dismissible service notices. */
+/** Voice and text canvas intent control with task feedback and dismissible service notices. */
 export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
   const editor = useEditor();
   const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
@@ -36,7 +36,7 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
         editor.markEventAsHandled(event);
         event.stopPropagation();
       }}
-      aria-label="Canvas voice input"
+      aria-label="Canvas request input"
     >
       <PushToTalkButton chat={chat} />
       {notice && notice.id !== dismissedNotice && (

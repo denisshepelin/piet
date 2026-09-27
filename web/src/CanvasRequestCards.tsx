@@ -3,6 +3,7 @@ import { useEditor } from "tldraw";
 import type { RunSnapshot } from "@piet/protocol";
 import { groupCanvasRequests } from "./canvasRequestGroups.ts";
 import { canvasTaskOutput, type CanvasTaskActions } from "./canvasTasks.ts";
+import { PietMark } from "./PietMark.tsx";
 
 /** Keeps ongoing requests and undismissed failures visible; clean completions move to history. */
 export const CanvasRequestCards = ({
@@ -46,9 +47,19 @@ export const CanvasRequestCards = ({
         const active = request.activeRuns.length > 0;
 
         return (
-          <article className="piet-request-card" key={request.promptId} aria-label={request.title}>
+          <article
+            className="piet-request-card"
+            key={request.promptId}
+            aria-label={request.title}
+            data-status={active ? "working" : "error"}
+          >
             <div className="piet-request-card__heading">
-              <span className="piet-request-card__dot" aria-hidden="true" />
+              <PietMark
+                size={18}
+                detail="simple"
+                active={active}
+                className="piet-request-card__mark"
+              />
               <strong title={request.title}>{request.title}</strong>
               <button
                 className="piet-icon-button"
