@@ -4,7 +4,9 @@ import type { AgentRole, ModelRef } from "@piet/protocol";
 import type { AgentChat, ChatMessage } from "./useAgentSocket.ts";
 import type { RunSnapshot } from "@piet/protocol";
 import { canvasTaskOutput, isCanvasTaskActive } from "./canvasTasks.ts";
-import { groupCanvasRequests } from "./canvasRequestGroups.ts";
+import { groupCanvasRequests, type CanvasRequestGroup } from "./canvasRequestGroups.ts";
+import { PietMark } from "./PietMark.tsx";
+import { PietWordmark } from "./PietWordmark.tsx";
 
 const { useState } = React;
 
@@ -110,6 +112,16 @@ const taskStatusLabel = (task: RunSnapshot): string => {
   return "cancelled";
 };
 
+const requestStatusLabel = (request: CanvasRequestGroup): string => {
+  if (request.activeRuns.length > 0) return "working";
+
+  if (request.runs.some((run) => run.status === "error")) return "error";
+
+  if (request.runs.some((run) => run.status === "cancelled")) return "cancelled";
+
+  return "done";
+};
+
 const TaskInspectorRow = ({ task, chat }: { task: RunSnapshot; chat: AgentChat }): ReactElement => {
   const editor = useEditor();
   const active = isCanvasTaskActive(task);
@@ -208,8 +220,9 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
       }}
     >
       <header className="piet-inspector__header">
-        <div>
-          <strong>inspector</strong>
+        <PietMark size={40} active={chat.busy} />
+        <div className="piet-inspector__title">
+          <PietWordmark />
           <div className="piet-inspector__status">
             <span className={`piet-status-dot${chat.ready ? " piet-status-dot--ready" : ""}`} />
             {chat.ready ? status : "Disconnected — reload to reconnect"}
@@ -276,17 +289,16 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
               ) : (
                 <div className="piet-inspector__tasks">
                   {[...requests].reverse().map((request) => (
-                    <details className="piet-request-history" key={request.promptId}>
+                    <details
+                      className="piet-request-history"
+                      key={request.promptId}
+                      data-status={requestStatusLabel(request)}
+                    >
                       <summary>
+                        <span className="piet-request-history__node" aria-hidden="true" />
                         <strong>{request.title}</strong>
-                        <span>
-                          {request.activeRuns.length > 0
-                            ? "working"
-                            : request.runs.some((run) => run.status === "error")
-                              ? "error"
-                              : request.runs.some((run) => run.status === "cancelled")
-                                ? "cancelled"
-                                : "done"}
+                        <span className="piet-request-history__status">
+                          {requestStatusLabel(request)}
                         </span>
                       </summary>
                       {request.runs.map((task) => (

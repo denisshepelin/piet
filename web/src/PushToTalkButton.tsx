@@ -8,10 +8,18 @@ import {
 } from "./pushToTalkSession.ts";
 import type { AgentChat } from "./useAgentSocket.ts";
 
-/** Hold to record, release to send; Escape, lost focus, and cancellation never submit audio. */
+const appendTranscript = (draft: string, transcript: string): string =>
+  [draft.trim(), transcript.trim()].filter(Boolean).join(" ");
+
+/**
+ * Hold to record, release to send; Escape, lost focus, and cancellation never submit audio.
+ * Speech is appended to any text already in the request field and sent together on release;
+ * the field otherwise accepts typed or externally dictated text, sent with Enter.
+ */
 export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement => {
   const editor = useEditor();
   const [state, setState] = useState<PushToTalkState>({ phase: "idle" });
+  const [draft, setDraft] = useState("");
   const sessionRef = useRef<PushToTalkSession | null>(null);
   const stateRef = useRef<PushToTalkState>(state);
   const chatRef = useRef(chat);
@@ -41,9 +49,19 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
         setState(next);
       },
       onTranscript: (text) => {
-        if (chatRef.current.ready) chatRef.current.send(text, context);
+        if (!chatRef.current.ready) return;
+        chatRef.current.send(appendTranscript(draft, text), context);
+        setDraft("");
       },
     });
+  };
+
+  const submitDraft = (): void => {
+    const text = draft.trim();
+
+    if (!text || !chatRef.current.ready || active) return;
+    chatRef.current.send(text, captureCanvasIntentContext(editor));
+    setDraft("");
   };
 
   const finish = (input: "pointer" | " " | "Enter"): void => {
@@ -134,21 +152,13 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
           }}
         >
           <svg
-            className="piet-voice__mondrian"
-            viewBox="0 0 80 80"
+            className="piet-voice__icon"
+            viewBox="0 0 24 24"
             aria-hidden="true"
             focusable="false"
           >
-            <path className="piet-voice__tile--yellow" d="M0 0h48v32H0z" />
-            <path className="piet-voice__tile--ground" d="M48 0h32v32H48z" />
-            <path className="piet-voice__tile--blue" d="M0 32h48v24H0z" />
-            <path className="piet-voice__tile--black" d="M48 32h32v24H48z" />
-            <path className="piet-voice__tile--red" d="M0 56h80v24H0z" />
-            <path className="piet-voice__grid" d="M0 32h80M0 56h80M48 0v56" />
-            <g className="piet-voice__microphone">
-              <rect x="19" y="7" width="10" height="14" rx="5" />
-              <path d="M15 17v2a9 9 0 0 0 18 0v-2M24 28v4" />
-            </g>
+            <rect x="9" y="2.5" width="6" height="11.5" rx="3" />
+            <path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8 21h8" />
           </svg>
         </button>
         {active && (
@@ -172,13 +182,29 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
                 ? "Recording · release to send · Escape to cancel"
                 : state.phase === "finishing"
                   ? "Finishing transcription · Escape to cancel"
-                  : "Hold to talk · release to send. Space/Enter when focused."}
+                  : "Hold to talk · release to send, or type and press Enter."}
       </div>
-      {active && "text" in state && state.text && (
-        <p className="piet-voice__transcript" aria-label="Voice transcript">
-          {state.text}
-        </p>
-      )}
+      <textarea
+        className="piet-voice__transcript"
+        aria-label="Canvas request"
+        placeholder="Type or dictate a request…"
+        rows={1}
+        value={active ? appendTranscript(draft, "text" in state ? state.text : "") : draft}
+        readOnly={active}
+        disabled={!chat.ready}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.currentTarget.blur();
+
+            return;
+          }
+
+          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          submitDraft();
+        }}
+      />
     </div>
   );
 };

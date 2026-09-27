@@ -103,8 +103,6 @@ test("hold streams audio; release drains final audio and submits once with recor
   page,
 }) => {
   const h = await openVoiceBrowser(page);
-  await expect(page.getByRole("textbox", { name: "Ask pi about this canvas" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "send", exact: true })).toHaveCount(0);
   await h.hold();
   await page.mouse.up();
   await expect.poll(() => h.controls).toContain("finish");
@@ -117,9 +115,9 @@ test("hold streams audio; release drains final audio and submits once with recor
   if (!initial) throw new Error("Missing initial canvas context");
   await h.hold();
   h.send({ type: "transcript", text: "Fill these" });
-  await expect(page.getByLabel("Voice transcript")).toHaveText("Fill these");
+  await expect(page.getByRole("textbox", { name: "Canvas request" })).toHaveValue("Fill these");
   h.send({ type: "transcript", text: "Fill these columns" });
-  await expect(page.getByLabel("Voice transcript")).toHaveText("Fill these columns");
+  await expect(page.getByRole("textbox", { name: "Canvas request" })).toHaveValue("Fill these columns");
   expect(h.prompts()).toHaveLength(1);
   const startCaptureBefore = new Date().toISOString();
   h.sendAgent({
@@ -304,4 +302,42 @@ test("pointer cancellation releases microphone and never sends a task", async ({
   await expectMicrophoneStopped(page);
   await expect.poll(h.closed).toBe(1);
   expect(h.prompts()).toHaveLength(0);
+});
+
+test("typed or externally dictated text submits on Enter without recording", async ({ page }) => {
+  const h = await openVoiceBrowser(page);
+  const field = page.getByRole("textbox", { name: "Canvas request" });
+  await field.fill("  Draw the login flow");
+  await field.press("Shift+Enter");
+  await field.pressSequentially("with retries  ");
+  expect(h.prompts()).toHaveLength(0);
+  await field.press("Enter");
+  await expect.poll(() => h.prompts().length).toBe(1);
+  expect(h.prompts()[0]?.text).toBe("Draw the login flow\nwith retries");
+  await expect(field).toHaveValue("");
+  expect(h.recordings()).toBe(0);
+  await field.press("Enter");
+  expect(h.prompts()).toHaveLength(1);
+});
+
+test("speech appends to typed text and both submit together on release", async ({ page }) => {
+  const h = await openVoiceBrowser(page);
+  const field = page.getByRole("textbox", { name: "Canvas request" });
+  await field.fill("Draw the login flow ");
+  await h.hold();
+  h.send({ type: "transcript", text: "with retries" });
+  await expect(field).toHaveValue("Draw the login flow with retries");
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect.poll(h.closed).toBe(1);
+  await expect(field).toHaveValue("Draw the login flow ");
+  expect(h.prompts()).toHaveLength(0);
+
+  await h.hold();
+  await page.mouse.up();
+  await expect.poll(() => h.controls).toContain("finish");
+  h.send({ type: "finished", text: "with retries" });
+  await expect.poll(() => h.prompts().length).toBe(1);
+  expect(h.prompts()[0]?.text).toBe("Draw the login flow with retries");
+  await expect(field).toHaveValue("");
 });
