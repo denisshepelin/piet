@@ -15,7 +15,7 @@ type Props = {
   onClose: () => void;
 };
 
-const AGENT_ROLES: AgentRole[] = ["main", "research"];
+const AGENT_ROLES: AgentRole[] = ["main", "worker"];
 
 const roleLabel = (role: ChatMessage["role"]): string => {
   if (role === "user") return "you";
@@ -256,7 +256,7 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
               model controls
             </h2>
             <p className="piet-inspector__copy">
-              Main and research use the same available role controls.
+              Main and worker use the same available role controls.
             </p>
             {AGENT_ROLES.map((role) => (
               <RoleControls key={role} chat={chat} role={role} />

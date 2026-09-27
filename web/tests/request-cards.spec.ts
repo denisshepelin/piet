@@ -87,7 +87,7 @@ test("ongoing request card stays screen-fixed during real canvas pan and wheel z
     runId: "task:camera",
     promptId: "prompt:camera",
     title: "Camera task",
-    kind: "research",
+    kind: "worker",
     pageId: browser.context.page.id,
     anchor: { x: 240, y: 220 },
     createdAt: Date.now(),
@@ -152,7 +152,7 @@ test("pending answer marker sits at the request anchor, follows the camera, and 
     updatedAt: Date.now(),
     sequence: 1,
     status: "running",
-    activity: "Researching",
+    activity: "Working",
   };
 
   browser.send({ type: "run_update", run });

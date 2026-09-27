@@ -8,7 +8,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { type BackgroundSession, createSubagentTool, type ResearchResult } from "./subagentTool.js";
+import { type BackgroundSession, createSubagentTool, type BackgroundTaskResult } from "./subagentTool.js";
 import type { PromptCanvasContext, RunSnapshot, ServerMessage } from "@piet/protocol";
 
 type Deferred<T> = {
@@ -189,7 +189,7 @@ const runUpdate = (message: ServerMessage): RunSnapshot | undefined =>
 
 const collect = () => {
   const messages: ServerMessage[] = [];
-  const results: ResearchResult[] = [];
+  const results: BackgroundTaskResult[] = [];
 
   return {
     messages,
@@ -197,7 +197,7 @@ const collect = () => {
     send: (message: ServerMessage): void => {
       messages.push(message);
     },
-    onResult: (result: ResearchResult): void => {
+    onResult: (result: BackgroundTaskResult): void => {
       results.push(result);
     },
     updates: (): RunSnapshot[] =>
@@ -253,7 +253,7 @@ test("extracts only the last assistant message and reports the complete lifecycl
     onSessionEvent: (context, event) => observed.push({ context, event }),
   });
 
-  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "scan",
     instruction: "inspect the repository",
   });
@@ -308,7 +308,7 @@ test("reports failed initialization and makes the failed run retryable", async (
     },
   });
 
-  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "retry me",
     instruction: "inspect",
   });
@@ -343,7 +343,7 @@ test("retry creates a fresh run when initialization settles late", async () => {
     },
   });
 
-  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "retry initialization",
     instruction: "inspect once",
   });
@@ -384,7 +384,7 @@ test("retry isolates a late prompt settlement from the fresh run", async () => {
     },
   });
 
-  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "retry active",
     instruction: "inspect twice",
   });
@@ -420,7 +420,7 @@ test("cancels while session initialization is pending without late results", asy
     createSession: async () => initialization.promise,
   });
 
-  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "initializing",
     instruction: "wait",
   });
@@ -465,7 +465,7 @@ for (const stopReason of ["error", "aborted"] as const) {
       createSession: async () => session,
     });
 
-    await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    await executeSpawn(findTool(runtime.tools, "spawn_task"), {
       title: `provider ${stopReason}`,
       instruction: "inspect",
     });
@@ -497,7 +497,7 @@ test("deduplicates repeated streaming activity", async () => {
     createSession: async () => session,
   });
 
-  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "dedupe",
     instruction: "inspect",
   });
@@ -521,7 +521,7 @@ test("cancels active work and ignores late session events", async () => {
     createSession: async () => session,
   });
 
-  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const spawned = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "active",
     instruction: "wait",
   });
@@ -558,14 +558,14 @@ test("cancels queued work while another task occupies the running slot", async (
     },
   });
 
-  const firstRun = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const firstRun = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "first",
     instruction: "block",
   });
 
   await first.promptStarted.promise;
 
-  const secondRun = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const secondRun = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "second",
     instruction: "cancel",
   });
@@ -605,7 +605,7 @@ test("retry stays queued until the cancelled operation actually settles", async 
     },
   });
 
-  const original = await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  const original = await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "slot owner",
     instruction: "wait",
   });
@@ -636,7 +636,7 @@ test("times out active work and reports the deadline reason", async () => {
     createSession: async () => session,
   });
 
-  await executeSpawn(findTool(runtime.tools, "spawn_research"), {
+  await executeSpawn(findTool(runtime.tools, "spawn_task"), {
     title: "slow",
     instruction: "wait",
   });
@@ -666,7 +666,7 @@ test("keeps active work bounded at four running and eight active tasks", async (
 
   const runs = await Promise.all(
     Array.from({ length: 8 }, (_value, index) =>
-      executeSpawn(findTool(runtime.tools, "spawn_research"), {
+      executeSpawn(findTool(runtime.tools, "spawn_task"), {
         title: `run-${index}`,
         instruction: "wait",
       }),
@@ -676,7 +676,7 @@ test("keeps active work bounded at four running and eight active tasks", async (
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(sessions.length, 4);
   await assert.rejects(
-    executeSpawn(findTool(runtime.tools, "spawn_research"), {
+    executeSpawn(findTool(runtime.tools, "spawn_task"), {
       title: "overflow",
       instruction: "no",
     }),

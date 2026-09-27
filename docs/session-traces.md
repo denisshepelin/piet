@@ -23,7 +23,7 @@ Read `events.jsonl` with ordinary file/search tools:
 - `ws.out.canvas_request` / `ws.in.canvas_response` join canvas operations by `requestId` and retain parameters, outcomes, and errors.
 - `canvas.trace` links debug artifacts to the same `requestId`, `contextId`, and `pageId`. `capturedAt` is the browser snapshot time, not the later PNG completion time.
 - `ws.out.run_update` joins background work to its originating `promptId` through `runId`.
-- `worker.session_event` retains non-streaming research worker events with `runId` and `promptId`. Main SDK events use the `agent.*` prefix. Completed messages retain provider usage/cost fields when supplied; Piet does not calculate a summary.
+- `worker.session_event` retains non-streaming background worker events with `runId` and `promptId`. Main SDK events use the `agent.*` prefix. Completed messages retain provider usage/cost fields when supplied; Piet does not calculate a summary.
 - `web.canvas_request_ok` and `web.canvas_request_error` include browser execution duration in milliseconds. Streaming deltas are omitted; complete message/tool payloads are retained without the old 2,000-character truncation.
 
 Canvas context identities use the submission-time `capturedAt` of the main turn's prompt. Follow the prompt's canvas context or task update to join these to the originating user request.

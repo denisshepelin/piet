@@ -84,11 +84,11 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
     modelRuntime: runtime,
     settingsManager,
     mainResourceLoader: loader,
-    researchResourceLoader: loader,
+    workerResourceLoader: loader,
     defaultMainModel: { provider: model.provider, id: model.id },
     defaultMainThinkingLevel: "off",
-    defaultResearchModel: { provider: model.provider, id: model.id },
-    defaultResearchThinkingLevel: "off",
+    defaultWorkerModel: { provider: model.provider, id: model.id },
+    defaultWorkerThinkingLevel: "off",
     connId: "test",
     logEvent: () => undefined,
     send: (message) => {
@@ -244,7 +244,7 @@ test("main sessions serialize prompts and capture intent without reading the can
   }
 });
 
-test("research synthesis retains the original worksheet request after another user turn", async () => {
+test("worker result synthesis retains the original worksheet request after another user turn", async () => {
   const harness = await createHarness();
 
   const worksheetContext: PromptCanvasContext = {
@@ -269,14 +269,14 @@ test("research synthesis retains the original worksheet request after another us
     });
     await until(() => harness.completions.length === 1);
     harness.completions[0]?.("", {
-      name: "spawn_research",
+      name: "spawn_task",
       arguments: { title: "Assess Go", instruction: "Inspect repository migration costs" },
     });
     await until(() => harness.completions.length === 3);
-    const researchIndex = harness.promptTools.findIndex((tools) => tools.includes("read"));
-    assert.ok(researchIndex > 0);
-    const acknowledgementIndex = researchIndex === 1 ? 2 : 1;
-    harness.completions[acknowledgementIndex]?.("Research started");
+    const workerIndex = harness.promptTools.findIndex((tools) => tools.includes("read"));
+    assert.ok(workerIndex > 0);
+    const acknowledgementIndex = workerIndex === 1 ? 2 : 1;
+    harness.completions[acknowledgementIndex]?.("Task started");
     await until(() =>
       harness.sent.some((m) => m.type === "prompt_done" && m.promptId === "worksheet"),
     );
@@ -289,7 +289,7 @@ test("research synthesis retains the original worksheet request after another us
     await until(() => harness.completions.length === 4);
     harness.completions[3]?.("Unrelated answer");
     await until(() => harness.sent.some((m) => m.type === "prompt_done" && m.promptId === "other"));
-    harness.completions[researchIndex]?.("Pro: single binary. Con: replace the Pi runtime.");
+    harness.completions[workerIndex]?.("Pro: single binary. Con: replace the Pi runtime.");
     await until(() => harness.completions.length === 5);
 
     const synthesisRun = harness.sent.findLast(

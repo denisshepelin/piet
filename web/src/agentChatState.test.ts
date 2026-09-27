@@ -11,8 +11,8 @@ import {
 const task: RunSnapshot = {
   runId: "run:a",
   promptId: "prompt:a",
-  title: "Research",
-  kind: "research",
+  title: "Background task",
+  kind: "worker",
   pageId: "page:a",
   anchor: { x: 1, y: 2 },
   createdAt: 0,

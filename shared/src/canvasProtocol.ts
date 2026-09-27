@@ -348,7 +348,7 @@ const runBase = {
   runId: id,
   promptId: id,
   title: text,
-  kind: Type.Union([Type.Literal("research"), Type.Literal("response")]),
+  kind: Type.Union([Type.Literal("worker"), Type.Literal("response")]),
   pageId: id,
   anchor,
   createdAt: number,
@@ -385,7 +385,7 @@ const thinking = Type.Union([
   Type.Literal("max"),
 ]);
 
-const role = Type.Union([Type.Literal("main"), Type.Literal("research")]);
+const role = Type.Union([Type.Literal("main"), Type.Literal("worker")]);
 
 const modelRef = Type.Object({ provider: id, id });
 
@@ -399,7 +399,7 @@ const roleModelState = Type.Object({
 
 const modelState = Type.Object({
   available: Type.Array(modelOption),
-  roles: Type.Object({ main: roleModelState, research: roleModelState }),
+  roles: Type.Object({ main: roleModelState, worker: roleModelState }),
 });
 
 const clientLog = Type.Object({
