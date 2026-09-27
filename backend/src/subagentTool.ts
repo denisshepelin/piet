@@ -44,7 +44,7 @@ export type BackgroundSession = {
 };
 
 /** Result delivered after a background worker succeeds or fails; cancelled work is not delivered. */
-export type ResearchResult = {
+export type BackgroundTaskResult = {
   readonly runId: string;
   readonly promptId: string;
   readonly title: string;
@@ -56,14 +56,14 @@ export type ResearchResult = {
   readonly error?: string;
 };
 
-/** Dependencies and lifecycle limits for background research workers. */
+/** Dependencies and lifecycle limits for background workers. */
 export type SubagentToolOptions = {
   createSession: () => Promise<BackgroundSession>;
   send: (message: ServerMessage) => void;
   getCanvasContext: () => PromptCanvasContext;
   getPromptId: () => string;
   getUserRequest?: () => string;
-  onResult: (result: ResearchResult) => void;
+  onResult: (result: BackgroundTaskResult) => void;
   onSessionEvent?: (
     context: { runId: string; promptId: string },
     event: BackgroundSessionEvent,
@@ -178,7 +178,7 @@ const promptForTask = (run: RunRecord): string => {
 const isTerminal = (status: TaskStatus): status is TerminalTaskStatus =>
   status === "done" || status === "error" || status === "cancelled";
 
-/** Create bounded background research workers that report results to the main agent. */
+/** Create bounded background workers that report results to the main agent. */
 export const createSubagentTool = (options: SubagentToolOptions): BackgroundTools => {
   const maxRunning = normalizeLimit(options.maxRunning, DEFAULT_MAX_RUNNING);
   const maxActive = Math.max(maxRunning, normalizeLimit(options.maxActive, DEFAULT_MAX_ACTIVE));
@@ -208,7 +208,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
       runId: run.runId,
       promptId: run.promptId,
       title: run.title,
-      kind: "research" as const,
+      kind: "worker" as const,
       pageId: run.canvasContext.page.id,
       anchor: run.canvasContext.anchor,
       createdAt: run.createdAt,
@@ -263,7 +263,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
     }
   };
 
-  const notifyResult = (run: RunRecord, result: ResearchResult): void => {
+  const notifyResult = (run: RunRecord, result: BackgroundTaskResult): void => {
     if (disposed || (result.error === undefined && run.status !== "done")) return;
 
     if (result.error !== undefined || run.status === "done") options.onResult(result);
@@ -273,7 +273,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
     run: RunRecord,
     status: TerminalTaskStatus,
     value: string,
-    result?: ResearchResult,
+    result?: BackgroundTaskResult,
   ): void => {
     if (disposed || isTerminal(run.status)) return;
     run.status = status;
@@ -534,16 +534,19 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
     return run;
   };
 
-  const spawnResearch = defineTool({
-    name: "spawn_research",
-    label: "Spawn Research",
+  const spawnTask = defineTool({
+    name: "spawn_task",
+    label: "Spawn Task",
     description:
-      "Start a bounded repository research run in the background. Returns immediately; the result will be delivered later.",
-    promptSnippet: "Start one bounded repository research run without waiting for its result.",
+      "Start a bounded background worker that can read and search the local workspace, run shell commands, and create or edit files. It cannot draw or see the canvas image. Returns immediately; the result will be delivered later.",
+    promptSnippet:
+      "Start one bounded background workspace task (read files, run commands, create or edit files) without waiting for its result.",
     promptGuidelines: [
-      "Use spawn_research only when the answer depends on repository files or command output. Answer general knowledge, comparisons, estimates, and decisions directly without spawning research.",
-      "Fan out only when tasks are independent, using one spawn_research call per task.",
-      "For canvas decisions, request a ranked shortlist and one takeaway separately from supporting evidence. Do not ask for exhaustive lists to paste onto the board.",
+      "Use spawn_task only when the request needs workspace access you lack: facts from local files or command output, or creating, saving, or changing files. Everything else, including general knowledge, comparisons, estimates, decisions, explanations, drafts, and all drawing, you do yourself now, however long it takes.",
+      "Difficulty, length, or thinking time is never a reason to spawn. If the user only wants to see content, put it on the canvas; spawn only when they want it in a file.",
+      "Spawn one task per user request. Split into parallel tasks only when parts are independent and each needs workspace access.",
+      "The worker sees only your instruction and the canvas context summary, not the canvas image. Put everything it needs into the instruction: the content or design to produce, the target location if the user named one, and the expected result.",
+      "For findings, request a ranked shortlist and one takeaway separately from supporting evidence. For file work, request the absolute paths it created or changed and a one-line summary.",
       "Tell the user that the work is running in the background and finish this turn without waiting.",
     ],
     parameters: Type.Object({
@@ -558,7 +561,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
         content: [
           {
             type: "text",
-            text: "Background research started; the result will arrive automatically.",
+            text: "Background task started; the result will arrive automatically.",
           },
         ],
         details: { runId: run.runId, title: run.title },
@@ -648,7 +651,7 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
   };
 
   return {
-    tools: [spawnResearch],
+    tools: [spawnTask],
     cancel,
     retry,
     dispose,

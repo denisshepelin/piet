@@ -774,8 +774,8 @@ test("root request cards stay fixed during zoom and automatically move completed
 
   const sibling: RunSnapshot = {
     ...run,
-    runId: "research:sibling",
-    kind: "research",
+    runId: "worker:sibling",
+    kind: "worker",
     title: "Check architecture",
   };
 

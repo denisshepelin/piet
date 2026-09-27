@@ -46,7 +46,7 @@ export const createChatState = (): ChatState => ({
   messages: [],
   runs: [],
   models: [],
-  roles: { main: idleRole, research: idleRole },
+  roles: { main: idleRole, worker: idleRole },
   closedPrompts: [],
   dismissedRuns: [],
   noticeSequence: 0,

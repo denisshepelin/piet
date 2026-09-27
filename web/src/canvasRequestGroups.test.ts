@@ -14,14 +14,14 @@ const root: RunSnapshot = {
   updatedAt: 2,
   sequence: 1,
   status: "done",
-  result: "Research started",
+  result: "Task started",
 };
 
 const worker: RunSnapshot = {
   ...root,
-  runId: "research:one",
+  runId: "worker:one",
   title: "Inspect repository",
-  kind: "research",
+  kind: "worker",
   createdAt: 2,
   status: "running",
   activity: "Reading files",

@@ -4,7 +4,7 @@ import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-
 export type LogSource = "backend" | "web";
 
 /** Agent role associated with SDK lifecycle events. */
-export type LogAgent = "main" | "research" | "canvas";
+export type LogAgent = "main" | "worker" | "canvas";
 
 /** Connection identity joins socket events, tool calls, and canvas artifacts. */
 export type LogRecord = {

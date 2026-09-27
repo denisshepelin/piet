@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CanvasConnection } from "./canvasConnection.js";
 import { MainAgentManager } from "./mainAgentManager.js";
-import { MAIN_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT } from "./mainPrompt.js";
+import { MAIN_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
 import { createSessionTrace } from "./sessionTrace.js";
 import { parseClientMessage, type CanvasJsonObject, type ServerMessage } from "@piet/protocol";
 
@@ -25,11 +25,11 @@ const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "gpt-6-astra";
 
 const DEFAULT_MAIN_THINKING_LEVEL = "low";
 
-const DEFAULT_RESEARCH_MODEL_PROVIDER = process.env.RESEARCH_MODEL_PROVIDER ?? "openai-codex";
+const DEFAULT_WORKER_MODEL_PROVIDER = process.env.WORKER_MODEL_PROVIDER ?? "openai-codex";
 
-const DEFAULT_RESEARCH_MODEL_ID = process.env.RESEARCH_MODEL_ID ?? "gpt-5.6-luna";
+const DEFAULT_WORKER_MODEL_ID = process.env.WORKER_MODEL_ID ?? "gpt-5.6-luna";
 
-const DEFAULT_RESEARCH_THINKING_LEVEL = "medium";
+const DEFAULT_WORKER_THINKING_LEVEL = "medium";
 
 const logDirectory = process.env.PIET_LOG_DIR ?? "logs";
 
@@ -78,7 +78,7 @@ const mainResourceLoader = new DefaultResourceLoader({
   appendSystemPrompt: [],
 });
 
-const researchResourceLoader = new DefaultResourceLoader({
+const workerResourceLoader = new DefaultResourceLoader({
   cwd: process.cwd(),
   agentDir: getAgentDir(),
   settingsManager,
@@ -86,11 +86,11 @@ const researchResourceLoader = new DefaultResourceLoader({
   noSkills: true,
   noPromptTemplates: true,
   noContextFiles: true,
-  systemPromptOverride: () => RESEARCH_SYSTEM_PROMPT,
+  systemPromptOverride: () => WORKER_SYSTEM_PROMPT,
   appendSystemPrompt: [],
 });
 
-await Promise.all([mainResourceLoader.reload(), researchResourceLoader.reload()]);
+await Promise.all([mainResourceLoader.reload(), workerResourceLoader.reload()]);
 
 const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
 
@@ -123,7 +123,7 @@ wss.on("connection", async (socket, request) => {
     nodeVersion: process.version,
     captureTrace,
     mainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
-    researchModel: { provider: DEFAULT_RESEARCH_MODEL_PROVIDER, id: DEFAULT_RESEARCH_MODEL_ID },
+    workerModel: { provider: DEFAULT_WORKER_MODEL_PROVIDER, id: DEFAULT_WORKER_MODEL_ID },
   };
 
   if (gitState) manifest.git = gitState;
@@ -163,15 +163,15 @@ wss.on("connection", async (socket, request) => {
     modelRuntime,
     settingsManager,
     mainResourceLoader,
-    researchResourceLoader,
+    workerResourceLoader,
     requestCanvas: canvasConnection.request.bind(canvasConnection),
     defaultMainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
     defaultMainThinkingLevel: DEFAULT_MAIN_THINKING_LEVEL,
-    defaultResearchModel: {
-      provider: DEFAULT_RESEARCH_MODEL_PROVIDER,
-      id: DEFAULT_RESEARCH_MODEL_ID,
+    defaultWorkerModel: {
+      provider: DEFAULT_WORKER_MODEL_PROVIDER,
+      id: DEFAULT_WORKER_MODEL_ID,
     },
-    defaultResearchThinkingLevel: DEFAULT_RESEARCH_THINKING_LEVEL,
+    defaultWorkerThinkingLevel: DEFAULT_WORKER_THINKING_LEVEL,
     connId,
     logEvent,
     send: sendToClient,

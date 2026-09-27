@@ -1,6 +1,6 @@
 # Push-to-talk voice input
 
-Piet uses Soniox streaming speech-to-text for dictation. Voice is the only agent input: the completed transcript enters the main agent prompt path, including research workers, request cards, and guarded canvas commits. There is no typed prompt composer; the drawing canvas remains available. There is no spoken assistant output.
+Piet uses Soniox streaming speech-to-text for dictation. Voice is the only agent input: the completed transcript enters the main agent prompt path, including background workers, request cards, and guarded canvas commits. There is no typed prompt composer; the drawing canvas remains available. There is no spoken assistant output.
 
 ## Setup
 

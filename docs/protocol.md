@@ -25,7 +25,7 @@ Run `pnpm build` to build packages in dependency order. `pnpm dev` starts protoc
 ## Backend to browser
 
 - `ready { actor }`
-- `model_state { available, roles }`, with minimal UI model information and main/research role settings
+- `model_state { available, roles }`, with minimal UI model information and main/worker role settings
 - `main_state { busy }`
 - `text_delta`, `tool_start`, `tool_end`, `prompt_done`, scoped by `promptId`
 - `run_update { run }`, containing a complete task snapshot
@@ -38,7 +38,7 @@ Private model reasoning is not transported; task snapshots contain generic activ
 
 ## Task snapshots
 
-Common fields: `runId`, `promptId`, `title`, `kind` (`response | research | canvas`), `pageId`, `anchor`, `createdAt`, `updatedAt`, `sequence`.
+Common fields: `runId`, `promptId`, `title`, `kind` (`response | worker`), `pageId`, `anchor`, `createdAt`, `updatedAt`, `sequence`.
 
 State-specific fields:
 
@@ -68,7 +68,7 @@ Actions: `get_canvas`, `put_shape`, `put_shapes`, `put_mermaid`, `put_image`, `p
 
 ## Local transport
 
-The agent socket binds to `127.0.0.1` and accepts only the local Vite development/preview origins (ports 5173 and 4173). Set `PIET_WEB_ORIGIN` to allow an additional trusted frontend origin, such as a different development port. Missing and foreign origins are rejected. This is a local development boundary, not authentication for a remotely exposed service. Research-worker shell permissions are unchanged.
+The agent socket binds to `127.0.0.1` and accepts only the local Vite development/preview origins (ports 5173 and 4173). Set `PIET_WEB_ORIGIN` to allow an additional trusted frontend origin, such as a different development port. Missing and foreign origins are rejected. This is a local development boundary, not authentication for a remotely exposed service. Background workers keep their shell and file-writing tools.
 
 ## Limits
 
