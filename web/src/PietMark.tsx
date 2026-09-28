@@ -10,8 +10,11 @@ type MarkDrawing = {
   outlineWidth: number;
 };
 
-/** `simple` for tiny inline marks and the favicon, `grid` for controls and larger surfaces. */
-export type PietMarkDetail = "simple" | "grid";
+/**
+ * `solid` for canvas markers, `simple` for tiny inline marks and the favicon, `grid` for controls
+ * and larger surfaces.
+ */
+export type PietMarkDetail = "solid" | "simple" | "grid";
 
 /** Shared bubble silhouette; the tail sits under the right column in every variant. */
 const OUTLINE = "M6 8H58V46H50V58L40 46H6Z";
@@ -48,6 +51,14 @@ const simpleDrawing = ({ column, row, gridWidth, outlineWidth }: MarkStep): Mark
   outlineWidth,
 });
 
+const solidDrawing = ({ outlineWidth }: MarkStep): MarkDrawing => ({
+  cells: [{ fill: "blue", d: OUTLINE, delay: 0 }],
+  grid: "",
+  outline: OUTLINE,
+  gridWidth: 0,
+  outlineWidth,
+});
+
 const gridDrawing = ({ column, row, split, gridWidth, outlineWidth }: MarkStep): MarkDrawing => ({
   cells: [
     { fill: "blue", d: `M6 8H${column}V${row}H6Z`, delay: 0 },
@@ -79,7 +90,13 @@ export const PietMark = ({
   className?: string;
 }): ReactElement => {
   const step = markStep(size);
-  const drawing = detail === "simple" ? simpleDrawing(step) : gridDrawing(step);
+
+  const drawing =
+    detail === "solid"
+      ? solidDrawing(step)
+      : detail === "simple"
+        ? simpleDrawing(step)
+        : gridDrawing(step);
 
   return (
     <svg
@@ -98,7 +115,9 @@ export const PietMark = ({
           style={{ animationDelay: `${delay}s` }}
         />
       ))}
-      <path className="piet-mark__grid" d={drawing.grid} strokeWidth={drawing.gridWidth} />
+      {drawing.grid && (
+        <path className="piet-mark__grid" d={drawing.grid} strokeWidth={drawing.gridWidth} />
+      )}
       <path className="piet-mark__outline" d={drawing.outline} strokeWidth={drawing.outlineWidth} />
     </svg>
   );

@@ -77,6 +77,7 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
   const partialToolCalls: Array<(toolCall: ToolCall) => void> = [];
   const prompts: string[] = [];
   const promptTools: string[][] = [];
+  const systemPrompts: string[] = [];
   let canvasReads = 0;
 
   const manager = new MainAgentManager({
@@ -105,6 +106,7 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
       created.session.agent.streamFunction = (selectedModel, input, streamOptions) => {
         const stream = createAssistantMessageEventStream();
         promptTools.push(input.tools?.map((tool) => tool.name) ?? []);
+        systemPrompts.push(input.systemPrompt ?? "");
         const user = input.messages.findLast((message) => message.role === "user");
         prompts.push(
           user && !Array.isArray(user.content) ? user.content : JSON.stringify(user?.content),
@@ -187,6 +189,7 @@ const createHarness = async (requestCanvas?: RequestCanvas) => {
     sent,
     prompts,
     promptTools,
+    systemPrompts,
     completions,
     partialToolCalls,
     canvasReads: () => canvasReads,
@@ -239,6 +242,27 @@ test("main sessions serialize prompts and capture intent without reading the can
         .map((message) => message.busy),
       [true, false],
     );
+  } finally {
+    harness.manager.dispose();
+  }
+});
+
+test("the main system prompt keeps the custom prompt and adds each tool's guidelines", async () => {
+  const harness = await createHarness();
+
+  try {
+    await harness.manager.handle({ type: "prompt", id: "one", text: "Hi", canvasContext: context });
+    await until(() => harness.completions.length === 1);
+    const prompt = harness.systemPrompts[0] ?? "";
+
+    assert.ok(prompt.startsWith("Reply briefly\n\nTool guidelines:"));
+    assert.match(prompt, /^put_comment: Post a text answer as a Piet comment/m);
+    assert.match(
+      prompt,
+      /^- Reply in a listed thread \(threadId\) when the question follows it up/m,
+    );
+    assert.match(prompt, /^spawn_task: Start one bounded background workspace task/m);
+    harness.completions[0]?.("Hello");
   } finally {
     harness.manager.dispose();
   }

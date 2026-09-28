@@ -135,6 +135,21 @@ const visibleElement = Type.Object({
   text: Type.Optional(Type.String({ maxLength: 200 })),
 });
 
+const commentMessage = Type.Object({
+  author: Type.Union([Type.Literal("piet"), Type.Literal("user")]),
+  text: Type.String({ maxLength: 2_000 }),
+});
+
+const commentThreadSummary = Type.Object({
+  threadId: id,
+  x: number,
+  y: number,
+  distance: number,
+  sameSelection: Type.Optional(Type.Boolean()),
+  sharedSelection: Type.Optional(Type.Boolean()),
+  messages: Type.Array(commentMessage, { maxItems: 20 }),
+});
+
 const promptContext = Type.Object({
   capturedAt: Type.String(),
   page,
@@ -156,6 +171,8 @@ const promptContext = Type.Object({
       shapes: Type.Array(visibleElement, { maxItems: 200 }),
     }),
   ),
+  comments: Type.Optional(Type.Array(commentThreadSummary, { maxItems: 20 })),
+  thread: Type.Optional(commentThreadSummary),
 });
 
 const point = Type.Object({
@@ -220,6 +237,18 @@ const moveResult = Type.Object({
 
 const viewResult = Type.Object({ viewport: bounds, zoom: number });
 
+const commentParams = Type.Object({
+  text: Type.String({ minLength: 1, maxLength: 4_000 }),
+  anchor,
+  shapeIds: Type.Optional(strings),
+  selectionIds: Type.Optional(strings),
+  threadId: Type.Optional(id),
+  newThread: Type.Optional(Type.Boolean()),
+  question: Type.Optional(Type.String({ maxLength: 4_000 })),
+});
+
+const commentResult = Type.Object({ threadId: id, commentId: id, reply: Type.Boolean() });
+
 const getParams = Type.Object({
   scope: Type.Optional(scope),
   maxShapes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
@@ -269,6 +298,7 @@ export const canvasActionSchemas = {
     result: moveResult,
   },
   set_view: { params: viewParams, result: viewResult },
+  put_comment: { params: commentParams, result: commentResult },
 } as const;
 
 /** Curated canvas action names; no arbitrary editor execution. */
@@ -331,6 +361,7 @@ const canvasResponseSchema = Type.Union([
       deleteResult,
       moveResult,
       viewResult,
+      commentResult,
     ]),
   }),
   Type.Object({
@@ -432,6 +463,7 @@ const canvasTraceSchema = Type.Object({
     Type.Literal("delete_shapes"),
     Type.Literal("move_shapes"),
     Type.Literal("set_view"),
+    Type.Literal("put_comment"),
   ]),
   phase: Type.Union([
     Type.Literal("before"),
@@ -597,6 +629,9 @@ export type CanvasElementSummary = Static<typeof elementSummary>;
 /** Intent context is captured at text submission or voice recording start, before later canvas edits. */
 export type PromptCanvasContext = Static<typeof promptContext>;
 
+/** A Piet comment thread as the model sees it: position, distance from the anchor, and recent messages. */
+export type CanvasCommentThreadSummary = Static<typeof commentThreadSummary>;
+
 export type CanvasVisibleElement = Static<typeof visibleElement>;
 
 /** Author attribution is metadata, not a separate canvas replica. */
@@ -649,6 +684,9 @@ export type MoveElementsResult = Static<typeof moveResult>;
 
 /** Camera changes are explicit user-facing navigation. */
 export type SetViewResult = Static<typeof viewResult>;
+
+/** A text answer posted as a canvas comment; later answers to the same request reply in its thread. */
+export type PutCommentResult = Static<typeof commentResult>;
 
 /** Missing arrow targets are reported to the model. */
 export type SkippedArrowBinding = Static<typeof skippedBinding>;

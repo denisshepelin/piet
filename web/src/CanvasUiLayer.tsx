@@ -1,9 +1,12 @@
-import { createContext, useContext, type ReactElement, type ReactNode } from "react";
-import type { TLComponents } from "tldraw";
+import { createContext, useContext, useMemo, type ReactElement, type ReactNode } from "react";
+import { useEditor, type TLComponents } from "tldraw";
+import { CanvasComments, richTextToPlaintext, type CommentingContext } from "@tldraw/commenting";
 import type { AgentChat } from "./useAgentSocket.ts";
 import { CanvasComposer } from "./CanvasComposer.tsx";
 import { CanvasAnswerIndicators } from "./CanvasAnswerIndicators.tsx";
 import { CanvasRequestCards } from "./CanvasRequestCards.tsx";
+import { pietCommentingContext, pietThreadForUserReply } from "./canvasComments.ts";
+import { captureThreadReplyContext } from "./canvasIntent.ts";
 
 const CanvasUiChatContext = createContext<AgentChat | null>(null);
 
@@ -26,12 +29,28 @@ const useCanvasUiChat = (): AgentChat => {
   return chat;
 };
 
-/** Stable tldraw front layer for answer indicators, the composer, and screen-fixed ongoing requests. */
+/** Stable tldraw front layer for comments, answer indicators, the composer, and screen-fixed ongoing requests. */
 export const CanvasInFrontOfTheCanvas = (): ReactElement => {
   const chat = useCanvasUiChat();
+  const editor = useEditor();
+  const { send } = chat;
+
+  const commenting = useMemo(
+    (): CommentingContext => ({
+      ...pietCommentingContext,
+      onPostComment: (comment) => {
+        const thread = pietThreadForUserReply(editor, comment);
+
+        if (thread)
+          send(richTextToPlaintext(comment.body), captureThreadReplyContext(editor, thread));
+      },
+    }),
+    [editor, send],
+  );
 
   return (
     <>
+      <CanvasComments {...commenting} />
       <CanvasAnswerIndicators runs={chat.runs} />
       <CanvasRequestCards runs={chat.runs} actions={chat} />
       <CanvasComposer chat={chat} />

@@ -72,7 +72,13 @@ class CanvasBrowser {
     overrides: Partial<
       Pick<
         CanvasRequest,
-        "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace" | "requireCleanLayout"
+        | "pageId"
+        | "contextId"
+        | "expectedShapes"
+        | "deadlineAt"
+        | "style"
+        | "captureTrace"
+        | "requireCleanLayout"
       >
     > = {},
   ): PendingCanvasResponse {
@@ -100,7 +106,13 @@ class CanvasBrowser {
     overrides: Partial<
       Pick<
         CanvasRequest,
-        "pageId" | "expectedShapes" | "deadlineAt" | "style" | "captureTrace" | "requireCleanLayout"
+        | "pageId"
+        | "contextId"
+        | "expectedShapes"
+        | "deadlineAt"
+        | "style"
+        | "captureTrace"
+        | "requireCleanLayout"
       >
     > = {},
   ): Promise<CanvasActionResult<A>> {
@@ -835,4 +847,204 @@ test("root request cards stay fixed during zoom and automatically move completed
   });
   await expect(ongoing).toHaveCount(0);
   await page.screenshot({ path: "test-results/canvas-control-center.png" });
+});
+
+test("text answers become comments at the request anchor and follow-ups reply in the same thread", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+
+  const first = await browser.request(
+    "put_comment",
+    {
+      text: "Paris is the capital of France.",
+      anchor: { x: 200, y: 160 },
+      question: "What is the capital of France?",
+    },
+    { contextId: "context:first" },
+  );
+
+  expect(first.reply).toBe(false);
+  await expect(page.getByText("Paris is the capital of France.")).toBeVisible();
+
+  const followUp = await browser.request(
+    "put_comment",
+    {
+      text: "It has about two million residents.",
+      anchor: { x: 200, y: 160 },
+      question: "What is the capital of France?",
+    },
+    { contextId: "context:first" },
+  );
+
+  expect(followUp).toMatchObject({ threadId: first.threadId, reply: true });
+  await expect(page.getByText("It has about two million residents.")).toBeVisible();
+  await expect(page.getByText("What is the capital of France?")).toHaveCount(1);
+  await expect(
+    page.locator(".tlui-cmt-canvas-popover").getByText(/What is the capital|Paris is|two million/),
+  ).toHaveText([
+    "What is the capital of France?",
+    "Paris is the capital of France.",
+    "It has about two million residents.",
+  ]);
+
+  const other = await browser.request(
+    "put_comment",
+    { text: "Berlin is the capital of Germany.", anchor: { x: 600, y: 160 } },
+    { contextId: "context:second" },
+  );
+
+  expect(other.reply).toBe(false);
+  expect(other.threadId).not.toBe(first.threadId);
+
+  await expect(page.locator(".tlui-cmt-canvas-pin__marker")).toHaveCount(2);
+  await browser.request("put_shape", {
+    shape: { id: "after-comments", type: "geo", x: 200, y: 400, props: { w: 120, h: 60 } },
+  });
+  await page.screenshot({ path: "test-results/canvas-comment-answer.png" });
+});
+
+test("comment pins beside the request's drawn content instead of the submission anchor", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+  await browser.request(
+    "put_shape",
+    { shape: { id: "answer-box", type: "geo", x: 500, y: 300, props: { w: 200, h: 100 } } },
+    { contextId: "context:drawn" },
+  );
+
+  await browser.request(
+    "put_comment",
+    {
+      text: "The box holds the answer.",
+      anchor: { x: 40, y: 40 },
+      shapeIds: ["answer-box"],
+    },
+    { contextId: "context:drawn" },
+  );
+
+  const snapshot = await browser.request("get_canvas", { scope: "page", includeImage: false });
+  const canvas = await page.locator(".tl-canvas").boundingBox();
+  const pin = await page.locator(".tlui-cmt-canvas-pin__marker").boundingBox();
+
+  if (!canvas || !pin) throw new Error("Canvas or comment pin has no screen bounds");
+
+  const topRight = {
+    x: canvas.x + (700 - snapshot.viewport.x) * snapshot.zoom,
+    y: canvas.y + (300 - snapshot.viewport.y) * snapshot.zoom,
+  };
+
+  const tail = { x: pin.x + (50 / 64) * pin.width, y: pin.y + (58 / 64) * pin.height };
+
+  expect(Math.abs(tail.x - topRight.x)).toBeLessThan(3);
+  expect(Math.abs(tail.y - topRight.y)).toBeLessThan(3);
+});
+
+test("questions about the same selection reply in its Piet thread and the model can start a new one", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+  await browser.request("put_shape", {
+    shape: { id: "table", type: "geo", x: 300, y: 300, props: { w: 200, h: 100 } },
+  });
+  await page.locator(".tl-canvas").click({ position: { x: 900, y: 200 } });
+  await page.keyboard.press("ControlOrMeta+a");
+
+  await submitTestVoiceRequest(page, "What is this?");
+  const asked = browser.context;
+
+  if (!asked) throw new Error("Missing first request context");
+  expect(asked.selection.selectedShapeIds).toEqual(["shape:table"]);
+
+  const first = await browser.request(
+    "put_comment",
+    {
+      text: "A table.",
+      anchor: asked.anchor,
+      selectionIds: asked.selection.selectedShapeIds,
+    },
+    { contextId: asked.capturedAt },
+  );
+
+  await submitTestVoiceRequest(page, "What does it cost?");
+  const followUp = browser.context;
+
+  if (!followUp || followUp === asked) throw new Error("Missing follow-up request context");
+  expect(followUp.comments?.[0]).toMatchObject({
+    threadId: first.threadId,
+    sameSelection: true,
+    messages: [{ author: "piet", text: "A table." }],
+  });
+
+  const reply = await browser.request(
+    "put_comment",
+    {
+      text: "About 200 euros.",
+      anchor: followUp.anchor,
+      selectionIds: followUp.selection.selectedShapeIds,
+    },
+    { contextId: followUp.capturedAt },
+  );
+
+  expect(reply).toMatchObject({ threadId: first.threadId, reply: true });
+
+  const unrelated = await browser.request(
+    "put_comment",
+    {
+      text: "Unrelated.",
+      anchor: followUp.anchor,
+      selectionIds: followUp.selection.selectedShapeIds,
+      newThread: true,
+    },
+    { contextId: "context:unrelated" },
+  );
+
+  expect(unrelated.reply).toBe(false);
+  expect(unrelated.threadId).not.toBe(first.threadId);
+});
+
+test("replies in Piet threads go to the agent with the thread, regular comments stay private", async ({
+  page,
+}) => {
+  const browser = new CanvasBrowser(page);
+  await browser.open();
+
+  const answer = await browser.request(
+    "put_comment",
+    { text: "Rust is the safer choice.", anchor: { x: 200, y: 200 } },
+    { contextId: "context:rust" },
+  );
+
+  const prompts = () => browser.messages.filter((message) => message.type === "prompt");
+  const before = prompts().length;
+
+  await page.locator(".tlui-cmt-canvas-popover [contenteditable=true]").click();
+  await page.keyboard.type("Why is it safer?");
+  await page.keyboard.press("Enter");
+
+  await expect.poll(() => prompts().length).toBe(before + 1);
+  const asked = prompts().at(-1);
+
+  if (asked?.type !== "prompt") throw new Error("Missing thread reply prompt");
+  expect(asked.text).toBe("Why is it safer?");
+  expect(asked.canvasContext.thread).toMatchObject({
+    threadId: answer.threadId,
+    messages: [
+      { author: "piet", text: "Rust is the safer choice." },
+      { author: "user", text: "Why is it safer?" },
+    ],
+  });
+
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Comment — C" }).click();
+  await page.locator(".tl-canvas").click({ position: { x: 700, y: 450 } });
+  await page.locator(".tlui-cmt-canvas-composer [contenteditable=true]").click();
+  await page.keyboard.type("Note to self");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".tlui-cmt-canvas-pin__marker")).toHaveCount(2);
+  expect(prompts().length).toBe(before + 1);
 });
