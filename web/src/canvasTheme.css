@@ -140,15 +140,6 @@
   box-shadow: 0 0 0 var(--piet-black);
 }
 
-.piet-voice__record[aria-pressed="true"]::after {
-  content: "";
-  position: absolute;
-  inset: -11px;
-  border: 3px solid var(--piet-red);
-  pointer-events: none;
-  animation: piet-voice-listening 2.4s ease-in-out infinite;
-}
-
 .piet-app .piet-voice__record:disabled:not([data-phase="finishing"]) {
   background: var(--piet-control-background);
   color: var(--piet-muted);
@@ -156,15 +147,8 @@
   border-color: var(--piet-muted);
 }
 
-@keyframes piet-voice-listening {
-  50% {
-    opacity: 0.4;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .piet-app .piet-voice__record,
-  .piet-voice__record::after {
+  .piet-app .piet-voice__record {
     animation: none;
     transition: none;
   }
@@ -247,5 +231,4 @@
 .tlui-cmt-canvas-pin__marker:hover .tlui-cmt-pin:has(> .piet-comment-pin),
 .tlui-cmt-canvas-pin--open .tlui-cmt-pin:has(> .piet-comment-pin) {
   box-shadow: none;
-  filter: drop-shadow(3px 3px 0 var(--piet-black));
 }
