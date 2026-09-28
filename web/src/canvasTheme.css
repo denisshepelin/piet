@@ -230,3 +230,22 @@
     animation: none;
   }
 }
+
+/* Piet's comment pins are the bare mark: no tldraw teardrop, with the bubble tail on the anchor. */
+.tlui-cmt-pin:has(> .piet-comment-pin) {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.tlui-cmt-canvas-pin__marker:has(.piet-comment-pin) {
+  transform: translate(-25px, calc(-100% + 3px));
+}
+
+.tlui-cmt-canvas-pin__marker:hover .tlui-cmt-pin:has(> .piet-comment-pin),
+.tlui-cmt-canvas-pin--open .tlui-cmt-pin:has(> .piet-comment-pin) {
+  box-shadow: none;
+  filter: drop-shadow(3px 3px 0 var(--piet-black));
+}

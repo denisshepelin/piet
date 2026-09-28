@@ -13,10 +13,11 @@
   },
   "dependencies": {
     "@piet/protocol": "workspace:*",
-    "@tldraw/mermaid": "^5.4.0",
+    "@tldraw/commenting": "^5.4.2",
+    "@tldraw/mermaid": "^5.4.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tldraw": "^5.4.0"
+    "tldraw": "^5.4.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

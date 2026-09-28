@@ -349,6 +349,18 @@ type StreamedBatch = {
 
 const bareId = (id: string): string => id.replace(/^shape:/, "");
 
+/** Shapes a canvas result created, changed, or moved; these hold the request's visible answer. */
+const placedElementIds = (result: CanvasActionResult<CanvasAction>): string[] => [
+  ...("createdShapeIds" in result ? result.createdShapeIds : []),
+  ...("createdShapeId" in result ? [result.createdShapeId] : []),
+  ...("updatedShapeId" in result ? [result.updatedShapeId] : []),
+  ...("shapeId" in result ? [result.shapeId] : []),
+  ...("movedShapeIds" in result ? result.movedShapeIds : []),
+];
+
+const deletedElementIds = (result: CanvasActionResult<CanvasAction>): string[] =>
+  "deletedShapeIds" in result ? result.deletedShapeIds : [];
+
 const elementReferences = (element: Static<typeof elementParams>): string[] =>
   [
     element.parentId,
@@ -449,9 +461,17 @@ const canvasMutationReferences = (
 export const createCanvasTools = (
   connectionRequest: RequestCanvas,
   getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
-  resolveImage: typeof resolveImageSource = resolveImageSource,
+  {
+    resolveImage = resolveImageSource,
+    getUserRequest = () => undefined,
+  }: {
+    resolveImage?: typeof resolveImageSource;
+    /** The user's words behind the active turn, shown above Piet's first answer in a thread. */
+    getUserRequest?: () => string | undefined;
+  } = {},
 ) => {
   const observations = new Map<string, Record<string, string>>();
+  const placements = new Map<string, readonly string[]>();
   const knownIds = new Set<string>();
 
   const requestCanvas = async <A extends CanvasAction>(
@@ -516,6 +536,23 @@ export const createCanvasTools = (
 
     if ("createdShapeId" in result) knownIds.add(bareId(result.createdShapeId));
 
+    const placed = placedElementIds(result).map(bareId);
+    const deleted = new Set(deletedElementIds(result).map(bareId));
+
+    if (placed.length > 0 || deleted.size > 0) {
+      const previous = placements.get(context.capturedAt) ?? [];
+      placements.delete(context.capturedAt);
+      placements.set(context.capturedAt, [
+        ...new Set([...previous, ...placed].filter((id) => !deleted.has(id))),
+      ]);
+
+      if (placements.size > 32) {
+        const oldest = placements.keys().next().value;
+
+        if (oldest !== undefined) placements.delete(oldest);
+      }
+    }
+
     return result;
   };
 
@@ -527,7 +564,7 @@ export const createCanvasTools = (
     promptSnippet:
       "Read canvas bounds and shapes quickly; optionally request a PNG for visual review.",
     promptGuidelines: [
-      "Use get_canvas before answering questions about the drawing or before adding shapes that depend on current canvas context.",
+      "The submission context already lists the selection and visible shapes. Call get_canvas only when that is not enough: styles, props, or bindings of existing shapes, a truncated visible list, visual questions about the drawing, or context made stale by background work.",
       "Use get_canvas with scope 'viewport' first for visible context; use scope 'page' only when the whole current canvas is needed.",
       "Use get_selection instead when the user refers to selected objects or the current selection.",
     ],
@@ -576,7 +613,7 @@ export const createCanvasTools = (
     promptGuidelines: [
       "Use get_selection when the user says selected, selection, these objects, this group, or asks about highlighted objects.",
       "get_selection is the immutable submission-time selection; use get_canvas when you intentionally need current canvas state.",
-      "If no shapes were selected, ask the user to select objects or use get_canvas for broader canvas context.",
+      "If nothing was selected, work from the visible shapes in the context or get_canvas instead.",
     ],
     parameters: Type.Object({
       maxShapes: Type.Optional(
@@ -611,7 +648,7 @@ export const createCanvasTools = (
     promptSnippet: "Create one tldraw shape on the current canvas/page.",
     promptGuidelines: [
       "Use put_shape for geo, text, note, arrow, and frame shapes. Use the dedicated image, draw, highlight, and line tools for those native shape types.",
-      "Call get_selection first when editing selected objects; call get_canvas when you need broader context or the visible viewport center.",
+      "The selection and visible shapes are already in the submission context; read the canvas only for fresh state you actually need.",
       "Creation order is z-order: place zones first, then boxes with labels, then arrows, then annotations.",
       "Bind connecting arrows with startShapeId/endShapeId referencing shapes created in earlier calls; bound arrows route to shape edges and follow moved shapes.",
       "Pass plain text in the shape text field; the client converts it to tldraw rich text.",
@@ -977,7 +1014,7 @@ export const createCanvasTools = (
       "Update ONE existing tldraw shape by id: text, style/geometry props, position, rotation, opacity, or arrow bindings (startShapeId/endShapeId). Provide id, type, and only the fields to change; props are merged into the shape's existing props. x/y move the shape's bounds top-left in page space.",
     promptSnippet: "Update an existing tldraw shape by id.",
     promptGuidelines: [
-      "Use update_shape to fix problems found in get_canvas renders: overflowing labels (increase props.w/props.h or shorten text), wrong colors, misrouted arrows.",
+      "Use update_shape to fix problems a tool result reported, such as overflowing labels (increase props.w/props.h or shorten text) or misrouted arrows, or to change what the user asked to change.",
       "Pass only the fields being changed, plus id and type. Props merge into existing props; text replaces the label.",
       "Use ids returned by get_canvas, get_selection, put_shape, or put_shapes.",
     ],
@@ -1121,6 +1158,73 @@ export const createCanvasTools = (
     },
   });
 
+  const putCommentTool = defineTool({
+    name: "put_comment",
+    label: "Put Comment",
+    description:
+      "Answer in text as a Piet comment. To continue a conversation, pass the threadId of the listed Piet thread it follows up (same or shared selection, a pin within about 150 px, or a plain continuation with nothing selected). A new thread is pinned beside the content this request drew or edited, or at the pending-answer marker when nothing was drawn. The comment is the user's only view of a text answer.",
+    promptSnippet:
+      "Post a text answer as a Piet comment, replying in an existing thread when it fits.",
+    promptGuidelines: [
+      "Chat text is visible only in a hidden inspector, so a text answer must go through put_comment: a short fact, an explanation that needs no diagram, a clarifying question, a file path, or anything the user asks to get as text.",
+      "Keep the comment concise plain text, normally under 120 words. Use one comment per turn; do not repeat content you drew, and do not comment merely to announce a finished drawing.",
+      "Piet comment threads are conversations, so keep follow-ups together. The prompt canvas context lists open Piet threads (comments) with recent messages, distance from the anchor, sameSelection when a thread was started on exactly this selection, and sharedSelection when its selection overlaps this one.",
+      'Reply in a listed thread (threadId) when the question follows it up: the thread has sameSelection or sharedSelection, its pin is within about 150 px of the anchor, or nothing is selected and the question plainly continues its conversation. A question about a different shape or part, with a selection that shares nothing with the thread and a pin farther away, is a new subject even inside the same picture or topic: pass threadId "new".',
+      "When the context has thread, the user wrote in that Piet thread: answer its latest message there.",
+    ],
+    parameters: Type.Object({
+      text: Type.String({ description: "The answer as plain text.", minLength: 1 }),
+      threadId: Type.Optional(
+        Type.String({
+          description:
+            'The listed Piet thread this answer follows up (same or shared selection, a pin within about 150 px, or a plain continuation with nothing selected), or "new" for a different shape or subject. Omitted: the thread the user wrote in, the thread this request already used, or the thread on exactly this selection.',
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const context = getPromptCanvasContext();
+
+      if (!context) throw new Error("Canvas tools require an active request context");
+
+      const placedIds = placements.get(context.capturedAt) ?? [];
+      const selectedIds = context.selection.selectedShapeIds;
+
+      const threadId =
+        params.threadId === "new" ? undefined : (params.threadId ?? context.thread?.threadId);
+
+      const comment: CanvasActionParams<"put_comment"> = {
+        text: params.text.slice(0, 4_000),
+        anchor: context.anchor,
+      };
+
+      if (placedIds.length > 0) comment.shapeIds = [...placedIds];
+
+      if (selectedIds.length > 0) comment.selectionIds = [...selectedIds];
+
+      if (threadId) comment.threadId = threadId;
+
+      if (params.threadId === "new") comment.newThread = true;
+
+      const question = context.thread ? undefined : getUserRequest()?.trim();
+
+      if (question) comment.question = question.slice(0, 4_000);
+
+      const result = await requestCanvas("put_comment", comment, signal);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.reply
+              ? `Replied in comment thread ${result.threadId}`
+              : `Posted comment thread ${result.threadId}`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
   return {
     tools: [
       getCanvasTool,
@@ -1136,6 +1240,7 @@ export const createCanvasTools = (
       deleteElementsTool,
       moveElementsTool,
       setViewTool,
+      putCommentTool,
     ],
     streamPutElements,
   };

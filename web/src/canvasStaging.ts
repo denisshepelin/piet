@@ -1,4 +1,5 @@
 import {
+  commentSchemaRecords,
   createTLStore,
   defaultAssetUtils,
   defaultBindingUtils,
@@ -33,6 +34,7 @@ export const createCanvasStagingEditor = (liveEditor: Editor): CanvasStagingSess
 
   const store = createTLStore({
     initialData: before,
+    records: commentSchemaRecords,
     shapeUtils: defaultElementUtils,
     bindingUtils: defaultBindingUtils,
     assetUtils: defaultAssetUtils,

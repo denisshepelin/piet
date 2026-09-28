@@ -58,6 +58,7 @@ import {
   disposeCanvasStagingEditor,
 } from "./canvasStaging.ts";
 import { putMermaidDiagram } from "./mermaidCanvas.ts";
+import { putAgentComment } from "./canvasComments.ts";
 import type { CanvasRequestHandler } from "./useAgentSocket.ts";
 
 type Props = {
@@ -1223,6 +1224,8 @@ export const TldrawAgentBridge = ({ setCanvasRequestHandler }: Props): ReactElem
           return result;
         }
 
+        case "put_comment":
+          return putAgentComment(liveEditor, request);
         default:
           throw new Error("canvas action is not supported");
       }
