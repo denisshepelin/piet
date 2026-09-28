@@ -32,6 +32,7 @@ const PALETTE_TOKENS: PaletteToken[] = ["blue", "yellow", "red", "black", "groun
 const MARK_DETAILS: { detail: PietMarkDetail; label: string; use: string }[] = [
   { detail: "simple", label: "Simple", use: "Favicon, inline marks under 24px" },
   { detail: "grid", label: "Grid", use: "Controls, headers, splash" },
+  { detail: "solid", label: "Solid", use: "Canvas comment pins" },
 ];
 
 const WORDMARK_SIZES = [16, 20, 26, 40, 72];
@@ -459,7 +460,7 @@ const InspectorPanel = ({ animate }: { animate: boolean }): ReactElement => (
     </div>
     <aside className="piet-inspector" aria-label="Inspector preview">
       <header className="piet-inspector__header">
-        <PietMark size={40} active={animate} />
+        <PietMark size={40} />
         <div className="piet-inspector__title">
           <PietWordmark />
           <div className="piet-inspector__status">
@@ -516,7 +517,7 @@ export const Styleguide = (): ReactElement => {
       <div className={`tl-theme__${theme} sg-theme`} style={paletteStyle(palette)}>
         <header className="sg-toolbar" aria-label="Styleguide controls">
           <div className="sg-toolbar__brand">
-            <PietMark size={28} active={animate} />
+            <PietMark size={28} />
             <PietWordmark />
             <span className="sg-toolbar__tag">styleguide</span>
           </div>

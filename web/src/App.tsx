@@ -42,7 +42,7 @@ export const App = (): ReactElement => {
             aria-label={inspectorOpen ? "Close Piet inspector" : "Open Piet inspector"}
             aria-pressed={inspectorOpen}
           >
-            <PietMark size={30} active={chat.busy} />
+            <PietMark size={30} />
             <PietWordmark />
           </button>
           {inspectorOpen && <ChatSidebar chat={chat} onClose={() => setInspectorOpen(false)} />}

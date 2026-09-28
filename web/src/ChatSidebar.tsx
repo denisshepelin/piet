@@ -220,7 +220,7 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
       }}
     >
       <header className="piet-inspector__header">
-        <PietMark size={40} active={chat.busy} />
+        <PietMark size={40} />
         <div className="piet-inspector__title">
           <PietWordmark />
           <div className="piet-inspector__status">
