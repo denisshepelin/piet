@@ -560,19 +560,19 @@ export const createCanvasTools = (
     name: "get_canvas",
     label: "Get Canvas",
     description:
-      "Get current tldraw page context as fast structured JSON. Set includeImage true when visual review is needed. Scope can be viewport or page. JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
+      "Get current tldraw page context as structured JSON. Set includeImage true when visual review is needed. Scope can be viewport or page. JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
     promptSnippet:
-      "Read canvas bounds and shapes quickly; optionally request a PNG for visual review.",
+      "Read canvas bounds and shapes; optionally request a PNG for visual review.",
     promptGuidelines: [
       "The submission context already lists the selection and visible shapes. Call get_canvas only when that is not enough: styles, props, or bindings of existing shapes, a truncated visible list, visual questions about the drawing, or context made stale by background work.",
       "Use get_canvas with scope 'viewport' first for visible context; use scope 'page' only when the whole current canvas is needed.",
-      "Use get_selection instead when the user refers to selected objects or the current selection.",
+      "Use the selection already supplied in the submission context; call get_selection only when you need additional detail from that immutable snapshot.",
     ],
     parameters: Type.Object({
       includeImage: Type.Optional(
         Type.Boolean({
           description:
-            "Include a PNG for visual review (default false). Omit for fast structured context.",
+            "Include a PNG for visual review (default false). Omit for structured context only.",
         }),
       ),
       scope: Type.Optional(
@@ -611,7 +611,7 @@ export const createCanvasTools = (
       "Get the tldraw shapes that were selected when the active request was submitted. This immutable JSON snapshot is task-scoped, so later user or agent selection changes do not affect it. Returns an empty shapes array when nothing was selected.",
     promptSnippet: "Get the submission-time selected group of tldraw objects.",
     promptGuidelines: [
-      "Use get_selection when the user says selected, selection, these objects, this group, or asks about highlighted objects.",
+      "The submission context already includes the selected objects. Call get_selection only when that context lacks selection detail needed for the request, not merely because the user refers to selected objects.",
       "get_selection is the immutable submission-time selection; use get_canvas when you intentionally need current canvas state.",
       "If nothing was selected, work from the visible shapes in the context or get_canvas instead.",
     ],
@@ -653,7 +653,7 @@ export const createCanvasTools = (
       "Bind connecting arrows with startShapeId/endShapeId referencing shapes created in earlier calls; bound arrows route to shape edges and follow moved shapes.",
       "Pass plain text in the shape text field; the client converts it to tldraw rich text.",
       "Use tldraw style props, not CSS props. For example, use size ('s', 'm', 'l', 'xl') and font instead of fontSize.",
-      "Tool results report measured bounds and layout problems; do not re-read the canvas to review a successful drawing.",
+      "Tool results report measured bounds and layout problems.",
     ],
     parameters: elementParams,
     async execute(_toolCallId, params, signal) {
@@ -796,14 +796,14 @@ export const createCanvasTools = (
     name: "put_mermaid",
     label: "Put Mermaid",
     description:
-      "Create a whole diagram from Mermaid source as native, editable tldraw shapes (boxes plus bound arrows) with layout computed for you. Supports flowchart/graph, sequenceDiagram, stateDiagram-v2, and mindmap; other Mermaid kinds are placed as a static SVG fallback. Prefer this over many put_shape calls whenever the content fits one of the supported diagram kinds. x/y place the diagram's top-left in page space; omit both to place at the viewport center.",
+      "Create a whole diagram from Mermaid source as native, editable tldraw shapes (boxes plus bound arrows) with layout computed for you. Supports flowchart/graph, sequenceDiagram, stateDiagram-v2, and mindmap; other Mermaid kinds are placed as a static SVG fallback. Prefer this for complex diagrams where automatic layout helps, or to reuse suitable Mermaid source supplied by a background worker. x/y place the diagram's top-left in page space; omit both to place at the viewport center.",
     promptSnippet: "Create a full diagram on the tldraw canvas from Mermaid source in one call.",
     promptGuidelines: [
-      "Use put_mermaid instead of put_shapes for flowcharts, hierarchies, sequence diagrams, state diagrams, and mindmaps: the source is far shorter than shape JSON and layout is computed for you.",
+      "Prefer put_shapes for simple drawings and diagrams, and native shape tools for edits. Prefer put_mermaid for complex diagrams or suitable Mermaid source already supplied by a background worker; automatic layout turns the source into editable nodes and connectors.",
       "Use only flowchart/graph, sequenceDiagram, stateDiagram-v2, or mindmap; other kinds become a static image.",
       "Keep node labels short; put long explanations in separate text shapes afterwards with put_shapes.",
       "The diagram size is known only after rendering, so place x/y in clear space to the right of or below related content, not between existing shapes.",
-      "The result reports created shape ids, bounds, and layout problems; do not re-read the canvas to review a successful diagram. Fix reported overlaps with move_shapes.",
+      "The result reports created shape ids, bounds, and layout problems. Fix reported overlaps with move_shapes.",
     ],
     parameters: Type.Object({
       source: Type.String({
@@ -852,7 +852,7 @@ export const createCanvasTools = (
     promptGuidelines: [
       "Use put_image for pictures of real people, places, and objects (found with web search), local screenshots or assets, and generated SVG data URLs for icons or charts.",
       "Provide concise altText that describes the image's meaning, not its visual styling.",
-      "Place images in free space from the visible list; the result reports the image bounds, so do not re-read the canvas to check it.",
+      "Place images in free space from the visible list; the result reports the image bounds.",
     ],
     parameters: Type.Object({
       src: Type.String({
@@ -1127,7 +1127,7 @@ export const createCanvasTools = (
     name: "set_view",
     label: "Set View",
     description:
-      "Move the camera (shared with the user). Pass bounds to frame a page-space region, shapeIds to zoom to specific shapes, or neither to zoom to fit the whole page. Use it to navigate large canvases before get_canvas, or to show the user the result after drawing.",
+      "Move the camera shared with the user only when the user requests navigation. Pass bounds to frame a page-space region, shapeIds to zoom to specific shapes, or neither to zoom to fit the whole page. Use get_canvas with scope 'page' to inspect off-screen content without moving the camera.",
     promptSnippet: "Move the tldraw camera to a region, to shapes, or to fit the page.",
     promptGuidelines: [
       "Only move the shared camera when the user explicitly asks to navigate. Do not interrupt drawing or pan/zoom to announce background results.",

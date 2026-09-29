@@ -542,11 +542,11 @@ export const createSubagentTool = (options: SubagentToolOptions): BackgroundTool
     promptSnippet:
       "Start one bounded background workspace task (read files, run commands, create or edit files) without waiting for its result.",
     promptGuidelines: [
-      "Use spawn_task only when the request needs workspace access you lack: facts from local files or command output, or creating, saving, or changing files. Everything else, including general knowledge, comparisons, estimates, decisions, explanations, drafts, and all drawing, you do yourself now, however long it takes.",
-      "Difficulty, length, or thinking time is never a reason to spawn. If the user only wants to see content, put it on the canvas; spawn only when they want it in a file.",
+      "Use spawn_task only when the request needs workspace access you lack: facts from local files or command output, or creating, saving, or changing files. Everything else, including general knowledge, comparisons, estimates, decisions, explanations, drafts, and all drawing, you handle yourself.",
+      "Difficulty, length, or thinking time is never a reason to spawn.",
       "Spawn one task per user request. Split into parallel tasks only when parts are independent and each needs workspace access.",
       "The worker sees only your instruction and the canvas context summary, not the canvas image. Put everything it needs into the instruction: the content or design to produce, the target location if the user named one, and the expected result.",
-      "For findings, request a ranked shortlist and one takeaway separately from supporting evidence. For file work, request the absolute paths it created or changed and a one-line summary.",
+      "For findings, request concise content suited to the task, with supporting evidence kept separate. For file work, request the absolute paths it created or changed and a one-line summary.",
       "Tell the user that the work is running in the background and finish this turn without waiting.",
     ],
     parameters: Type.Object({
