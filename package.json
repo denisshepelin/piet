@@ -2,15 +2,19 @@
   "name": "piet",
   "version": "0.0.0",
   "private": true,
+  "bin": {
+    "piet": "bin/piet.mjs"
+  },
   "type": "module",
   "scripts": {
+    "test:cli": "node --test bin/piet.test.mjs",
     "predev": "pnpm --filter @piet/protocol build",
     "dev": "pnpm -r --parallel --if-present run dev",
     "dev:web": "pnpm --filter @piet/protocol build && pnpm --filter @piet/web run dev",
     "dev:backend": "pnpm --filter @piet/protocol build && pnpm --filter @piet/backend run dev",
     "build": "pnpm -r --if-present run build",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm --filter @piet/protocol build && pnpm -r --if-present run test",
+    "test": "pnpm test:cli && pnpm --filter @piet/protocol build && pnpm -r --if-present run test",
     "test:browser": "pnpm --filter @piet/protocol build && pnpm --filter @piet/web test:browser",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
