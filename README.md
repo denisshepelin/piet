@@ -5,6 +5,9 @@ Instead of typing in TUI you draw, ask with your voice and `piet` will work with
 
 Piet relies on `pi` provider authentication and setup by reading `~/.pi`.
 
+<img width="1902" height="1035" alt="SCR-20260930-tovn" src="https://github.com/user-attachments/assets/f308f020-7877-4ae1-9807-c460c035eb52" />
+
+
 ## Installation
 
 Requires Node.js 22.19+ and pnpm 11+.
