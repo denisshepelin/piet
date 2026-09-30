@@ -51,12 +51,13 @@ const simpleDrawing = ({ column, row, gridWidth, outlineWidth }: MarkStep): Mark
   outlineWidth,
 });
 
-const solidDrawing = ({ outlineWidth }: MarkStep): MarkDrawing => ({
+/** Solid marks sit on busy canvases, so a hairline edge keeps the blue bubble from reading as black. */
+const solidDrawing = (): MarkDrawing => ({
   cells: [{ fill: "blue", d: OUTLINE, delay: 0 }],
   grid: "",
   outline: OUTLINE,
   gridWidth: 0,
-  outlineWidth,
+  outlineWidth: 3,
 });
 
 const gridDrawing = ({ column, row, split, gridWidth, outlineWidth }: MarkStep): MarkDrawing => ({
@@ -93,7 +94,7 @@ export const PietMark = ({
 
   const drawing =
     detail === "solid"
-      ? solidDrawing(step)
+      ? solidDrawing()
       : detail === "simple"
         ? simpleDrawing(step)
         : gridDrawing(step);
