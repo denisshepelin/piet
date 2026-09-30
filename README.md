@@ -1,6 +1,7 @@
 # Piet
 
-A browser canvas with a Pi-powered agent.
+Piet is a canvas-like user interface to Pi AI agent.
+Instead of typing in TUI you draw, ask with your voice and `piet` will work with you on a canvas within browser.
 
 ## Installation
 
