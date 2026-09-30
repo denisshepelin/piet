@@ -3,6 +3,8 @@
 Piet is a canvas-like user interface to Pi AI agent.
 Instead of typing in TUI you draw, ask with your voice and `piet` will work with you on a canvas within browser.
 
+Piet relies on `pi` provider authentication and setup by reading `~/.pi`.
+
 ## Installation
 
 Requires Node.js 22.19+ and pnpm 11+.
@@ -23,6 +25,8 @@ If pnpm reports that its global bin directory is not on your PATH, run
 
 Keep the checkout in place: the command runs from it rather than an independent
 installed copy.
+
+Builtin speech to text function currently works only with [Soniox](https://soniox.com/docs/stt/get-started). You will need to provide SONIOX_API_KEY to use it.
 
 ## Run from any folder
 
