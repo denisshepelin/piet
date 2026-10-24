@@ -178,6 +178,8 @@ export class PietAgent {
   #busy = false;
   /** Runs created before the last fresh start belong to the discarded conversation. */
   #freshSince = 0;
+  /** Set while the process shuts down: unfinished responses continue in the next process, so they are not failed. */
+  #stopping = false;
   #stops: (() => Promise<void>)[] = [];
 
   /** The session must be open; `start()` begins following it. */
@@ -192,6 +194,7 @@ export class PietAgent {
     const { harness, root } = this.#session;
     const events = await watchEvents(harness, root.id, context);
     this.#applyEvents([events.snapshot]);
+    await this.#resumeRun(events.snapshot.run?.inputs[0]);
     events.start(async (batch) => this.#applyEvents(batch));
 
     const live = await harness.watchDoc(LiveDoc, root.id, context);
@@ -222,6 +225,8 @@ export class PietAgent {
 
   /** Stops following the session; the session itself keeps its work for the next process. */
   async stop(): Promise<void> {
+    this.#stopping = true;
+
     for (const turn of this.#turns.values()) clearTimeout(turn.deadline);
     await Promise.all([
       ...this.#stops.map((stop) => stop()),
@@ -368,6 +373,8 @@ export class PietAgent {
   async #settle(turn: ResponseTurn, submission: Submission): Promise<void> {
     const settled = await settlementOf(submission);
 
+    if (this.#stopping) return;
+
     if (turn.cancelReason !== undefined) {
       if (turn.started) await this.#rewind(turn.prompt.promptId);
       this.#finish(turn, { ...turn.run, status: "cancelled", reason: turn.cancelReason });
@@ -454,6 +461,27 @@ export class PietAgent {
       MAIN_TURN_TIMEOUT_MS,
     );
     this.#publish(turn, { ...turn.run, status: "running", activity: "Preparing a response" });
+  }
+
+  /**
+   * Picks up the response a previous process was running when it stopped: the conversation continues it, so it shows
+   * as running again for the request whose `piet.prompt` entry is the newest.
+   */
+  async #resumeRun(submissionId: SubmissionId | undefined): Promise<void> {
+    if (submissionId === undefined) return;
+    const page = await this.#session.root.entries({}, REWIND_SCAN_LIMIT, undefined, context);
+    const entry = page.items.find((item) => canvasPromptOf(item) !== undefined);
+    const prompt = entry ? canvasPromptOf(entry) : undefined;
+
+    if (!entry || !prompt) return;
+    this.#begin(prompt, messageText(entry.model?.[0]));
+
+    const turn = this.#turns.get(prompt.promptId);
+
+    if (turn && !turn.followed) {
+      turn.followed = true;
+      void this.#follow(turn, submissionId);
+    }
   }
 
   /** Follows a response that was submitted elsewhere, such as a worker's report. */
