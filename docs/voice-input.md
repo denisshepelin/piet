@@ -12,13 +12,14 @@ pnpm dev
 
 The backend `dev` and `start` scripts load the root `.env`; existing environment variables take precedence. Restart the backend after changing the key. The key stays on the backend. Do not use a `VITE_` variable for it. Without a key, recording shows a configuration error; drawing remains available.
 
-Use HTTPS or localhost and allow microphone access. The initial implementation uses `MediaRecorder` with WebM/Opus or Ogg/Opus, supported in Chrome and Firefox. Browsers that only record MP4/AAC show an unsupported-format message instead of submitting broken audio. `VITE_WS_URL` still selects the Piet backend; transcription uses `/transcription` on that same origin.
+Use HTTPS or localhost and allow microphone access. Capture uses an `AudioWorklet` and streams raw 16 kHz mono 16-bit PCM, so it works in any browser with Web Audio worklets, including Safari on iOS and iPadOS; it does not depend on `MediaRecorder` container support. `VITE_WS_URL` still selects the Piet backend; transcription uses `/transcription` on that same origin.
 
 ## Interaction
 
-- Hold the square Mondrian microphone button with mouse or touch; release to submit. The ivory tile turns red while recording and yellow while connecting or transcribing.
+- The request bar is a single row: the text field, then the microphone at its end. Hold the microphone with mouse or touch; release to submit. It turns red while recording and yellow while connecting or transcribing. The bar keeps a fixed height and position: status lines stack above it only while recording, finishing, or on an error, and a long live transcript scrolls to follow the newest words instead of growing the field.
 - With the button focused, hold **Space** or **Enter** and release to submit.
-- **Escape** or **cancel voice** discards the recording, including while final transcription is pending.
+- **Escape** discards the recording, including while final transcription is pending.
+- Once a request is sent, **stop** (a black square) appears in the bar, left of the microphone, while it has queued or running tasks. It cancels every task of the newest such request; press again to stop the next one. Canvas edits already committed are kept, but a stopped response is removed from the main agent's conversation, so its request and partial reply are not sent with later requests.
 - Losing window focus, hiding the tab, pointer cancellation, or losing the agent connection cancels recording.
 - The live transcript is provisional. No task starts until recording has stopped and Soniox has returned its finished response.
 - The microphone stops immediately on release; finalization can continue without capturing more audio.
@@ -30,7 +31,7 @@ Selection, page, viewport, anchor, and styles are frozen when the hold begins, n
 ## Architecture decision
 
 ```text
-Microphone / MediaRecorder
+Microphone / AudioWorklet -> 16 kHz PCM
   -> dedicated Piet WebSocket /transcription
   -> Soniox streaming STT
   -> provider-independent transcript / finished events
@@ -40,7 +41,7 @@ Microphone / MediaRecorder
 
 `pushToTalkSession.ts` owns microphone capture, ordered audio buffering, release/finalization, and teardown. `PushToTalkButton.tsx` owns user interaction and immutable canvas context. These concerns do not belong in the existing agent socket reducer, which owns model conversation and canvas RPC rather than audio resources.
 
-`sonioxTranscription.ts` owns provider configuration, credentials, token parsing, cumulative final text, replaceable provisional text, and the provider's empty-frame end-of-stream convention. `@piet/protocol/transcription` is the narrow browser/backend contract: binary audio, `finish`/`cancel` control strings, and parsed `ready`, `transcript`, `finished`, or `error` events. Every socket represents exactly one recording. Terminal-state guards prevent duplicate submission or late results after cancellation; there are no automatic retries.
+`sonioxTranscription.ts` owns provider configuration, credentials, token parsing, cumulative final text, replaceable provisional text, and the provider's empty-frame end-of-stream convention. `pcmCaptureWorklet.js` batches mono capture frames into roughly 100 ms chunks off the main thread; `pcmEncoder.ts` averages them down to the shared `transcriptionAudio` format (`pcm_s16le`, 16 kHz, mono), carrying partial windows across chunk boundaries. The backend declares the same format to Soniox instead of relying on container auto-detection. `@piet/protocol/transcription` is the narrow browser/backend contract: binary PCM audio, `finish`/`cancel` control strings, and parsed `ready`, `transcript`, `finished`, or `error` events. Every socket represents exactly one recording. Terminal-state guards prevent duplicate submission or late results after cancellation; there are no automatic retries.
 
 This deliberately uses a proxy rather than exposing Soniox credentials to the browser. The proxy shares the existing loopback listener and trusted-origin policy. Like Piet's other local APIs, this is not a remotely authenticated multi-user service; add authentication and per-user quotas before exposing it.
 
@@ -67,7 +68,7 @@ pnpm fmt:check
 pnpm build
 ```
 
-Backend tests use real WebSockets and a local Soniox protocol peer. Browser tests use Chromium's synthetic microphone with the real MediaRecorder, and a recording transcription endpoint. This verifies capture, streaming, release, cancellation, startup races, immutable context, and prompt submission without sending audio to an external service. Actual Soniox recognition quality and account/model access require a manual smoke test with your key.
+Backend tests use real WebSockets and a local Soniox protocol peer. Browser tests use Chromium's synthetic microphone with the real AudioWorklet capture, and a recording transcription endpoint. This verifies capture, streaming, release, cancellation, startup races, immutable context, and prompt submission without sending audio to an external service. Actual Soniox recognition quality and account/model access require a manual smoke test with your key.
 
 ## References
 

@@ -70,7 +70,7 @@ Actions: `get_canvas`, `put_shape`, `put_shapes`, `put_mermaid`, `put_image`, `p
 
 ## Local transport
 
-The agent socket binds to `127.0.0.1` and accepts only the local Vite development/preview origins (ports 5173 and 4173). Set `PIET_WEB_ORIGIN` to allow an additional trusted frontend origin, such as a different development port. Missing and foreign origins are rejected. This is a local development boundary, not authentication for a remotely exposed service. Background workers keep their shell and file-writing tools.
+The agent socket binds to `127.0.0.1` and accepts only the local Vite development/preview origins (ports 5173 and 4173). Set `PIET_WEB_ORIGIN` to a comma-separated list of additional trusted frontend origins, such as a different development port or a Tailscale host. Missing and foreign origins are rejected. This is a local development boundary, not authentication for a remotely exposed service. Background workers keep their shell and file-writing tools.
 
 ## Limits
 

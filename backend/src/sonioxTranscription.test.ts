@@ -80,7 +80,16 @@ test("transcription streams audio, replaces interim tokens, and waits for final 
   const h = await openHarness(t);
   await until(() => h.events.some((event) => event.type === "ready"));
   assert.match(h.received[0]?.data ?? "", /test-secret/);
-  assert.match(h.received[0]?.data ?? "", /stt-rt-v5/);
+  assert.deepEqual(
+    { ...JSON.parse(h.received[0]?.data ?? "{}"), api_key: undefined },
+    {
+      api_key: undefined,
+      model: "stt-rt-v5",
+      audio_format: "pcm_s16le",
+      sample_rate: 16000,
+      num_channels: 1,
+    },
+  );
   h.client.send(Buffer.from("audio-header"));
   h.client.send(Buffer.from("audio-tail"));
   h.send({

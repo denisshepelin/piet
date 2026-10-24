@@ -1,8 +1,13 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
-import { parseClientMessage, type ClientMessage, type ServerMessage } from "@piet/protocol";
+import {
+  parseClientMessage,
+  type ClientMessage,
+  type RunSnapshot,
+  type ServerMessage,
+} from "@piet/protocol";
 import type { TranscriptionEvent } from "@piet/protocol/transcription";
 
-// Chromium's synthetic microphone exercises the real MediaRecorder and audio-track lifecycle.
+// Chromium's synthetic microphone exercises the real AudioWorklet capture and audio-track lifecycle.
 test.use({
   permissions: ["microphone"],
   launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] },
@@ -117,7 +122,9 @@ test("hold streams audio; release drains final audio and submits once with recor
   h.send({ type: "transcript", text: "Fill these" });
   await expect(page.getByRole("textbox", { name: "Canvas request" })).toHaveValue("Fill these");
   h.send({ type: "transcript", text: "Fill these columns" });
-  await expect(page.getByRole("textbox", { name: "Canvas request" })).toHaveValue("Fill these columns");
+  await expect(page.getByRole("textbox", { name: "Canvas request" })).toHaveValue(
+    "Fill these columns",
+  );
   expect(h.prompts()).toHaveLength(1);
   const startCaptureBefore = new Date().toISOString();
   h.sendAgent({
@@ -173,17 +180,155 @@ test("Escape discards speech, stops the microphone, and allows a fresh recording
   expect(h.prompts()[0]?.text).toBe("A fresh request");
 });
 
-test("cancel button discards a recording while final transcription is pending", async ({
-  page,
-}) => {
+test("Escape discards a recording while final transcription is pending", async ({ page }) => {
   const h = await openVoiceBrowser(page);
   await h.hold();
   await page.mouse.up();
   await expect.poll(() => h.controls).toContain("finish");
-  await page.getByRole("button", { name: "cancel voice" }).click();
+  await page.keyboard.press("Escape");
   await expect.poll(h.closed).toBe(1);
   await expectMicrophoneStopped(page);
   expect(h.prompts()).toHaveLength(0);
+});
+
+test("stop cancels every running task of the newest request and hides once none remain", async ({
+  page,
+}) => {
+  const h = await openVoiceBrowser(page);
+  const stop = page.getByRole("button", { name: /^Stop / });
+  await expect(stop).toHaveCount(0);
+
+  const older: RunSnapshot = {
+    runId: "question:older",
+    promptId: "question:older",
+    title: "Draw the login flow",
+    kind: "response",
+    pageId: "page:page",
+    anchor: { x: 0, y: 0 },
+    createdAt: 1,
+    updatedAt: 1,
+    sequence: 1,
+    status: "running",
+    activity: "Drawing",
+  };
+
+  const newer: RunSnapshot = {
+    ...older,
+    runId: "question:newer",
+    promptId: "question:newer",
+    title: "Add retry arrows",
+    createdAt: 2,
+  };
+
+  const worker: RunSnapshot = { ...newer, runId: "worker:newer", kind: "worker", createdAt: 3 };
+
+  for (const run of [older, newer, worker]) h.sendAgent({ type: "run_update", run });
+
+  await expect(stop).toHaveAccessibleName("Stop Add retry arrows");
+  await stop.click();
+  await expect
+    .poll(() =>
+      h.messages.flatMap((message) => (message.type === "cancel_run" ? [message.runId] : [])),
+    )
+    .toEqual([newer.runId, worker.runId]);
+
+  for (const run of [newer, worker])
+    h.sendAgent({
+      type: "run_update",
+      run: { ...run, sequence: 2, status: "cancelled", reason: "Cancelled by user" },
+    });
+  await expect(stop).toHaveAccessibleName("Stop Draw the login flow");
+  h.sendAgent({
+    type: "run_update",
+    run: { ...older, sequence: 2, status: "done", result: "Drawn" },
+  });
+  await expect(stop).toHaveCount(0);
+});
+
+test("a stopped request is marked in the main history", async ({ page }) => {
+  const h = await openVoiceBrowser(page);
+  await h.hold();
+  await page.mouse.up();
+  await expect.poll(() => h.controls).toContain("finish");
+  h.send({ type: "finished", text: "Think hard about this database" });
+  await expect.poll(() => h.prompts().length).toBe(1);
+  const prompt = h.prompts()[0];
+
+  if (!prompt) throw new Error("Missing submitted prompt");
+
+  const run: RunSnapshot = {
+    runId: prompt.id,
+    promptId: prompt.id,
+    title: prompt.text,
+    kind: "response",
+    pageId: prompt.canvasContext.page.id,
+    anchor: prompt.canvasContext.anchor,
+    createdAt: 1,
+    updatedAt: 1,
+    sequence: 1,
+    status: "running",
+    activity: "Thinking",
+  };
+
+  h.sendAgent({ type: "run_update", run });
+  await page.getByRole("button", { name: "Open Piet inspector" }).click();
+
+  const bubble = page
+    .getByRole("complementary", { name: "Piet inspector" })
+    .getByRole("article")
+    .filter({ hasText: "Think hard about this database" })
+    .last();
+
+  await expect(bubble).not.toContainText("stopped");
+  await page.getByRole("button", { name: `Stop ${prompt.text}` }).click();
+  h.sendAgent({
+    type: "run_update",
+    run: { ...run, sequence: 2, status: "cancelled", reason: "Cancelled by user" },
+  });
+  await expect(bubble).toContainText("you · stopped");
+});
+
+test("the request bar keeps its size and place while recording, finishing, and running tasks", async ({
+  page,
+}) => {
+  const h = await openVoiceBrowser(page);
+  const bar = page.getByRole("textbox", { name: "Canvas request" });
+  const idle = await bar.boundingBox();
+  await h.hold();
+  const long = Array.from({ length: 12 }, (_, index) => `Draw box number ${index + 1}`).join(", ");
+  h.send({ type: "transcript", text: long });
+  await expect(bar).toHaveValue(long);
+  await expect(page.getByRole("status").filter({ hasText: "Recording" })).toBeVisible();
+  expect(await bar.boundingBox()).toEqual(idle);
+  expect(
+    await bar.evaluate((field) => field.scrollHeight - field.clientHeight - field.scrollTop),
+  ).toBeLessThanOrEqual(1);
+  await page.mouse.up();
+  await expect(page.getByRole("status").filter({ hasText: "Finishing" })).toBeVisible();
+  expect(await bar.boundingBox()).toEqual(idle);
+  h.send({ type: "finished", text: "Draw a box" });
+  await expect.poll(() => h.prompts().length).toBe(1);
+  const prompt = h.prompts()[0];
+
+  if (!prompt) throw new Error("Missing submitted prompt");
+  h.sendAgent({
+    type: "run_update",
+    run: {
+      runId: prompt.id,
+      promptId: prompt.id,
+      title: prompt.text,
+      kind: "response",
+      pageId: prompt.canvasContext.page.id,
+      anchor: prompt.canvasContext.anchor,
+      createdAt: 1,
+      updatedAt: 1,
+      sequence: 1,
+      status: "running",
+      activity: "Thinking",
+    },
+  });
+  await expect(page.getByText("1 task running")).toBeVisible();
+  expect((await bar.boundingBox())?.y).toBe(idle?.y);
 });
 
 test("focused Space key records and release submits; repeated keydown does not restart", async ({

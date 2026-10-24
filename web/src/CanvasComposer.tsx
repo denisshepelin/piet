@@ -38,7 +38,6 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
       }}
       aria-label="Canvas request input"
     >
-      <PushToTalkButton chat={chat} />
       {notice && notice.id !== dismissedNotice && (
         <div className="piet-composer__hint" role="alert">
           {notice.text}{" "}
@@ -56,6 +55,7 @@ export const CanvasComposer = ({ chat }: { chat: AgentChat }): ReactElement => {
           {activeCount} task{activeCount === 1 ? "" : "s"} running
         </div>
       )}
+      <PushToTalkButton chat={chat} />
     </section>
   );
 };

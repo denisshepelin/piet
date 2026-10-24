@@ -3,7 +3,7 @@ import { WebSocketServer } from "ws";
 /** Local browser transport: only explicitly trusted web origins may invoke agent tools. */
 export const createCanvasSocketServer = (
   port: number,
-  additionalOrigin?: string,
+  additionalOrigins?: string,
 ): WebSocketServer => {
   const origins = new Set([
     "http://localhost:5173",
@@ -12,7 +12,11 @@ export const createCanvasSocketServer = (
     "http://127.0.0.1:4173",
   ]);
 
-  if (additionalOrigin) origins.add(new URL(additionalOrigin).origin);
+  (additionalOrigins ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .forEach((origin) => origins.add(new URL(origin).origin));
 
   return new WebSocketServer({
     host: "127.0.0.1",

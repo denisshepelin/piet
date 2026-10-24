@@ -52,3 +52,11 @@ export const activeAnswerAnchors = (
       ? [{ promptId: request.promptId, title: request.title, anchor: root.anchor }]
       : [];
   });
+
+/** The most recently submitted request that still has queued or running work, stopped first. */
+export const latestActiveCanvasRequest = (
+  runs: readonly RunSnapshot[],
+): CanvasRequestGroup | undefined =>
+  groupCanvasRequests(runs)
+    .filter((request) => request.activeRuns.length > 0)
+    .sort((a, b) => (b.runs[0]?.createdAt ?? 0) - (a.runs[0]?.createdAt ?? 0))[0];

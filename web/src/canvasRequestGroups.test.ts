@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunSnapshot } from "@piet/protocol";
-import { activeAnswerAnchors, groupCanvasRequests } from "./canvasRequestGroups.ts";
+import {
+  activeAnswerAnchors,
+  groupCanvasRequests,
+  latestActiveCanvasRequest,
+} from "./canvasRequestGroups.ts";
 
 const root: RunSnapshot = {
   runId: "question:one",
@@ -101,4 +105,31 @@ test("answer anchors mark active requests on the current page at the root questi
     { promptId: "question:one", title: "Should I switch to Go?", anchor: { x: 10, y: 20 } },
   ]);
   assert.deepEqual(activeAnswerAnchors([root], "page:one"), []);
+});
+
+test("latest active request is the newest submission that still has running work", () => {
+  const older: RunSnapshot = { ...root, status: "running", activity: "Drawing" };
+
+  const newer: RunSnapshot = {
+    ...root,
+    runId: "question:two",
+    promptId: "question:two",
+    title: "Newer question",
+    createdAt: 5,
+    status: "running",
+    activity: "Thinking",
+  };
+
+  const newest: RunSnapshot = {
+    ...newer,
+    runId: "question:three",
+    promptId: "question:three",
+    createdAt: 9,
+    status: "done",
+    result: "Answered",
+  };
+
+  assert.equal(latestActiveCanvasRequest([older, newer, newest])?.promptId, newer.promptId);
+  assert.equal(latestActiveCanvasRequest([root, worker])?.promptId, root.promptId);
+  assert.equal(latestActiveCanvasRequest([root, newest]), undefined);
 });

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useEditor } from "tldraw";
 import type { AgentRole, ModelRef } from "@piet/protocol";
 import type { AgentChat, ChatMessage } from "./useAgentSocket.ts";
+import { isStoppedChatMessage } from "./agentChatState.ts";
 import type { RunSnapshot } from "@piet/protocol";
 import { canvasTaskOutput, isCanvasTaskActive } from "./canvasTasks.ts";
 import { groupCanvasRequests, type CanvasRequestGroup } from "./canvasRequestGroups.ts";
@@ -317,15 +318,24 @@ export const ChatSidebar = ({ chat, onClose }: Props): ReactElement => {
                 <p className="piet-inspector__empty">No messages yet.</p>
               ) : (
                 <div className="piet-inspector__messages">
-                  {visibleMessages.map((message) => (
-                    <article
-                      className={`piet-message piet-message--${message.role}`}
-                      key={message.id}
-                    >
-                      <div className="piet-message__role">{roleLabel(message.role)}</div>
-                      <div>{message.text}</div>
-                    </article>
-                  ))}
+                  {visibleMessages.map((message) => {
+                    const stopped = isStoppedChatMessage(message, chat.runs);
+
+                    return (
+                      <article
+                        className={`piet-message piet-message--${message.role}`}
+                        key={message.id}
+                        data-stopped={stopped || undefined}
+                        title={stopped ? "Stopped · not sent with later requests" : undefined}
+                      >
+                        <div className="piet-message__role">
+                          {roleLabel(message.role)}
+                          {stopped && " · stopped"}
+                        </div>
+                        <div>{message.text}</div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </section>

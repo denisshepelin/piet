@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { useEditor } from "tldraw";
 import { captureCanvasIntentContext } from "./canvasIntent.ts";
+import { latestActiveCanvasRequest } from "./canvasRequestGroups.ts";
 import {
   startPushToTalkSession,
   type PushToTalkSession,
@@ -13,6 +14,7 @@ const appendTranscript = (draft: string, transcript: string): string =>
 
 /**
  * Hold to record, release to send; Escape, lost focus, and cancellation never submit audio.
+ * Stop cancels the newest request that is still running, once speech has already been sent.
  * Speech is appended to any text already in the request field and sent together on release;
  * the field otherwise accepts typed or externally dictated text, sent with Enter.
  */
@@ -28,6 +30,17 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
 
   const active =
     state.phase === "connecting" || state.phase === "recording" || state.phase === "finishing";
+
+  const stoppable = latestActiveCanvasRequest(chat.runs);
+
+  const fieldText = active ? appendTranscript(draft, "text" in state ? state.text : "") : draft;
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const field = fieldRef.current;
+
+    if (active && field) field.scrollTop = field.scrollHeight;
+  }, [active, fieldText]);
 
   const cancel = (): void => {
     held.current = null;
@@ -113,7 +126,48 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
 
   return (
     <div className="piet-voice">
-      <div className="piet-voice__controls">
+      <div className="piet-voice__bar">
+        <textarea
+          className="piet-voice__transcript"
+          aria-label="Canvas request"
+          placeholder="Type, or hold the mic to talk…"
+          rows={1}
+          ref={fieldRef}
+          value={fieldText}
+          readOnly={active}
+          disabled={!chat.ready}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.currentTarget.blur();
+
+              return;
+            }
+
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            submitDraft();
+          }}
+        />
+        {stoppable && (
+          <button
+            className="piet-button piet-voice__stop"
+            type="button"
+            aria-label={`Stop ${stoppable.title}`}
+            title={`Stop: ${stoppable.title}`}
+            disabled={!chat.ready}
+            onClick={() => stoppable.activeRuns.forEach((run) => chat.cancelRun(run.runId))}
+          >
+            <svg
+              className="piet-voice__stop-icon"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <rect x="1" y="1" width="10" height="10" />
+            </svg>
+          </button>
+        )}
         <button
           className="piet-button piet-voice__record"
           type="button"
@@ -161,15 +215,10 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
             <path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8 21h8" />
           </svg>
         </button>
-        {active && (
-          <button className="piet-button" type="button" onClick={cancel}>
-            cancel voice
-          </button>
-        )}
       </div>
       <div
         id="piet-voice-status"
-        className="piet-composer__hint"
+        className="piet-composer__hint piet-voice__status"
         role={state.phase === "error" ? "alert" : "status"}
       >
         {!chat.ready
@@ -182,29 +231,8 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
                 ? "Recording · release to send · Escape to cancel"
                 : state.phase === "finishing"
                   ? "Finishing transcription · Escape to cancel"
-                  : "Hold to talk · release to send, or type and press Enter."}
+                  : ""}
       </div>
-      <textarea
-        className="piet-voice__transcript"
-        aria-label="Canvas request"
-        placeholder="Type or dictate a request…"
-        rows={1}
-        value={active ? appendTranscript(draft, "text" in state ? state.text : "") : draft}
-        readOnly={active}
-        disabled={!chat.ready}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.currentTarget.blur();
-
-            return;
-          }
-
-          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-          event.preventDefault();
-          submitDraft();
-        }}
-      />
     </div>
   );
 };

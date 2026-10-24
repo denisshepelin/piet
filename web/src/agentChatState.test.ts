@@ -5,7 +5,9 @@ import {
   createChatState,
   disconnectChatState,
   dismissChatRun,
+  isStoppedChatMessage,
   reduceAgentMessage,
+  type ChatMessage,
 } from "./agentChatState.ts";
 
 const task: RunSnapshot = {
@@ -93,4 +95,43 @@ test("a fresh start drops runs and messages but keeps the connection and model s
   assert.equal(state.actor?.id, "main:piet");
   assert.deepEqual(state.runs, []);
   assert.deepEqual(state.messages, []);
+});
+
+test("messages of a stopped response are marked until a retry resends the prompt", () => {
+  const stopped: RunSnapshot = {
+    ...task,
+    runId: "prompt:a",
+    kind: "response",
+    status: "cancelled",
+    reason: "Cancelled by user",
+  };
+
+  const prompt: ChatMessage = { id: "prompt:a", promptId: "prompt:a", role: "user", text: "Hi" };
+
+  const reply: ChatMessage = {
+    id: "assistant:prompt:a",
+    promptId: "prompt:a",
+    role: "assistant",
+    text: "Partial",
+  };
+
+  const retry: RunSnapshot = {
+    ...task,
+    runId: "retry:a",
+    kind: "response",
+    createdAt: 5,
+    status: "running",
+    activity: "Thinking",
+  };
+
+  assert.equal(isStoppedChatMessage(prompt, [stopped]), true);
+  assert.equal(isStoppedChatMessage(reply, [stopped]), true);
+  assert.equal(isStoppedChatMessage(prompt, [stopped, retry]), false);
+  assert.equal(isStoppedChatMessage(reply, [stopped, retry]), true);
+  assert.equal(
+    isStoppedChatMessage(prompt, [stopped, { ...retry, status: "cancelled", reason: "Stopped" }]),
+    true,
+  );
+  assert.equal(isStoppedChatMessage(prompt, [{ ...stopped, status: "done", result: "Ok" }]), false);
+  assert.equal(isStoppedChatMessage(prompt, [task]), false);
 });

@@ -1,7 +1,11 @@
 import { WebSocket, type RawData } from "ws";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { transcriptionLimits, type TranscriptionEvent } from "@piet/protocol/transcription";
+import {
+  transcriptionAudio,
+  transcriptionLimits,
+  type TranscriptionEvent,
+} from "@piet/protocol/transcription";
 import type { RedactedSecret } from "./redactedSecret.js";
 
 const sonioxResponseSchema = Type.Object({
@@ -91,7 +95,9 @@ export const createSonioxTranscriptionHandler = (options: {
         JSON.stringify({
           api_key: apiKey.reveal(),
           model: "stt-rt-v5",
-          audio_format: "auto",
+          audio_format: transcriptionAudio.format,
+          sample_rate: transcriptionAudio.sampleRate,
+          num_channels: transcriptionAudio.channels,
         }),
       );
       phase = "streaming";

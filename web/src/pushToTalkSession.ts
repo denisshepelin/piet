@@ -1,4 +1,6 @@
 import { parseTranscriptionEvent, transcriptionLimits } from "@piet/protocol/transcription";
+import pcmCaptureWorkletUrl from "./pcmCaptureWorklet.js?url&no-inline";
+import { createPcmEncoder } from "./pcmEncoder.ts";
 
 /** Push-to-talk feedback distinguishes captured audio from finalization and failed recordings. */
 export type PushToTalkState =
@@ -23,14 +25,15 @@ export const startPushToTalkSession = (options: {
   let phase: "connecting" | "recording" | "finishing" | "closed" = "connecting";
   const isClosed = (): boolean => phase === "closed";
   let microphone: MediaStream | undefined;
-  let recorder: MediaRecorder | undefined;
+  let audioContext: AudioContext | undefined;
+  let capture: AudioWorkletNode | undefined;
   let socket: WebSocket | undefined;
   let ready = false;
-  let recorderStopped = false;
+  let captureStopped = false;
   let finishSent = false;
   let transcript = "";
   let bufferedBytes = 0;
-  let pending: Blob[] = [];
+  let pending: ArrayBuffer[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let recordingTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -44,8 +47,11 @@ export const startPushToTalkSession = (options: {
     clearTimeout(recordingTimer);
     pending = [];
 
-    if (recorder && recorder.state !== "inactive") recorder.stop();
+    capture?.port.close();
     microphone?.getTracks().forEach((track) => track.stop());
+
+    if (audioContext && audioContext.state !== "closed")
+      void audioContext.close().catch(() => undefined);
     socket?.close();
   };
 
@@ -73,7 +79,7 @@ export const startPushToTalkSession = (options: {
     pending = [];
     bufferedBytes = 0;
 
-    if (phase === "finishing" && recorderStopped && !finishSent) {
+    if (phase === "finishing" && captureStopped && !finishSent) {
       finishSent = true;
       socket.send("finish");
     }
@@ -83,7 +89,7 @@ export const startPushToTalkSession = (options: {
     finish: () => {
       if (phase === "closed" || phase === "finishing") return;
 
-      if (!recorder || recorder.state !== "recording") {
+      if (!capture || phase !== "recording") {
         session.cancel();
 
         return;
@@ -96,7 +102,7 @@ export const startPushToTalkSession = (options: {
         transcriptionLimits.finalizationMs,
         "Voice transcription did not finish. Please try again.",
       );
-      recorder.stop();
+      capture.port.postMessage("stop");
       microphone?.getTracks().forEach((track) => track.stop());
     },
     cancel: () => {
@@ -114,23 +120,17 @@ export const startPushToTalkSession = (options: {
     "Voice recording could not start. Check microphone permissions and retry.",
   );
   void (async () => {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") {
       fail("Voice recording needs a supported browser on HTTPS or localhost.");
 
       return;
     }
 
-    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find(
-      (type) => MediaRecorder.isTypeSupported(type),
-    );
-
-    if (!mimeType) {
-      fail("Voice recording requires WebM or Ogg audio. Try Chrome or Firefox.");
-
-      return;
-    }
-
     try {
+      // Safari only lets audio start inside the press gesture, before any await.
+      const context = new AudioContext();
+      audioContext = context;
+      void context.resume().catch(() => undefined);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       if (isClosed()) {
@@ -217,11 +217,33 @@ export const startPushToTalkSession = (options: {
       connection.addEventListener("close", () =>
         fail("Voice transcription disconnected before completion."),
       );
-      const capture = new MediaRecorder(stream, { mimeType });
-      recorder = capture;
-      capture.addEventListener("dataavailable", ({ data }) => {
-        if (phase === "closed" || data.size === 0) return;
-        bufferedBytes += data.size;
+      await context.audioWorklet.addModule(pcmCaptureWorkletUrl);
+
+      if (isClosed()) return;
+      const encode = createPcmEncoder(context.sampleRate);
+
+      const node = new AudioWorkletNode(context, "piet-pcm-capture", {
+        channelCount: 1,
+        channelCountMode: "explicit",
+        channelInterpretation: "speakers",
+      });
+
+      capture = node;
+      node.port.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
+        if (phase === "closed") return;
+
+        if (data === "stopped") {
+          captureStopped = true;
+          flush();
+
+          return;
+        }
+
+        if (!(data instanceof Float32Array)) return;
+        const chunk = encode(data);
+
+        if (chunk.byteLength === 0) return;
+        bufferedBytes += chunk.byteLength;
 
         if (bufferedBytes > transcriptionLimits.bufferedBytes) {
           fail("Voice recording exceeded its audio buffer limit.");
@@ -229,28 +251,25 @@ export const startPushToTalkSession = (options: {
           return;
         }
 
-        pending.push(data);
+        pending.push(chunk);
         flush();
       });
-      capture.addEventListener("stop", () => {
-        if (phase === "recording") {
-          fail("Voice recording stopped unexpectedly. Please try again.");
-
-          return;
-        }
-
-        recorderStopped = true;
-        flush();
+      node.port.start();
+      context.addEventListener("statechange", () => {
+        if (phase === "recording" && context.state !== "running")
+          fail("Voice recording was interrupted. Please try again.");
       });
-      capture.addEventListener("error", () =>
-        fail("Voice recording failed. Check your microphone and try again."),
-      );
-      capture.start(100);
+      context.createMediaStreamSource(stream).connect(node).connect(context.destination);
+      await context.resume();
+
+      if (isClosed()) return;
       recordingTimer = setTimeout(
         () => fail("Voice recording limit is 60 seconds. Please record a shorter request."),
         transcriptionLimits.recordingMs,
       );
       phase = "recording";
+
+      if (ready) clearTimeout(timer);
       publish();
     } catch (error) {
       fail(

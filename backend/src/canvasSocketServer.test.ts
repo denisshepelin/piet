@@ -5,7 +5,7 @@ import { WebSocket } from "ws";
 import { createCanvasSocketServer } from "./canvasSocketServer.js";
 
 test("canvas socket binds loopback and accepts trusted browser origins", async (t) => {
-  const server = createCanvasSocketServer(0, "http://localhost:6000");
+  const server = createCanvasSocketServer(0, "http://localhost:6000, https://piet.example.ts.net");
   t.after(
     () =>
       new Promise<void>((resolve, reject) =>
@@ -17,13 +17,15 @@ test("canvas socket binds loopback and accepts trusted browser origins", async (
   assert.ok(address instanceof Object);
   assert.equal(address.address, "127.0.0.1");
   await Promise.all(
-    ["http://localhost:5173", "http://localhost:6000"].map(async (origin) => {
-      const socket = new WebSocket(`ws://127.0.0.1:${address.port}`, { origin });
-      await once(socket, "open");
-      const closed = once(socket, "close");
-      socket.close();
-      await closed;
-    }),
+    ["http://localhost:5173", "http://localhost:6000", "https://piet.example.ts.net"].map(
+      async (origin) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}`, { origin });
+        await once(socket, "open");
+        const closed = once(socket, "close");
+        socket.close();
+        await closed;
+      },
+    ),
   );
 });
 

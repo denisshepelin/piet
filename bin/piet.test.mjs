@@ -43,10 +43,13 @@ const createPietFixture = async (t) => {
   return { repository, workspace, cli: join(repository, "bin/piet.mjs") };
 };
 
-const runPietFixture = async (t, fixture, args) => {
+const runPietFixture = async (t, fixture, args, extraEnv = {}) => {
   const env = { ...process.env };
   delete env.PORT;
   delete env.PIET_CLI_TEST_SECRET;
+  delete env.PIET_WEB_ORIGIN;
+  delete env.VITE_WS_URL;
+  Object.assign(env, extraEnv);
 
   const child = spawn(process.execPath, [fixture.cli, ...args], {
     cwd: fixture.workspace,
@@ -149,6 +152,22 @@ test("Piet CLI checks pi credentials in the workspace before starting servers", 
 
   assert.equal(result.status, 3);
   assert.doesNotMatch(result.stdout, /"role":"(backend|web)"/);
+});
+
+test("Piet CLI keeps caller backend URL and adds caller web origins", async (t) => {
+  const fixture = await createPietFixture(t);
+
+  const messages = await runPietFixture(t, fixture, [], {
+    PIET_WEB_ORIGIN: "https://piet.example.ts.net",
+    VITE_WS_URL: "wss://piet.example.ts.net:8787",
+  });
+
+  const web = messages.find((message) => message.role === "web");
+  assert.equal(web.ws, "wss://piet.example.ts.net:8787");
+  assert.equal(
+    messages.find((message) => message.role === "backend").origin,
+    `http://127.0.0.1:${web.args[3]},https://piet.example.ts.net`,
+  );
 });
 
 test("Piet CLI skips an occupied default web UI port", async (t) => {
