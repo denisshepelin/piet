@@ -6,6 +6,11 @@ const MAX_CANVAS_REJECTIONS = 3;
 
 const MAX_TRACKED_TURNS = 128;
 
+const MAX_FAILURE_LENGTH = 300;
+
+/** Failure key of a write that names no shapes, such as a Mermaid diagram; any later successful write supersedes it. */
+const WHOLE_CALL_KEY = "call:";
+
 type TurnCanvasState = {
   rejections: number;
   failures: Map<string, string>;
@@ -30,16 +35,35 @@ const canvasMutationKeys = (
 ): string[] => {
   const ids =
     "shapes" in params
-      ? params.shapes.map((element) => element.id ?? "anonymous")
+      ? params.shapes.map((element) => element.id ?? `${WHOLE_CALL_KEY}${action}`)
       : "shape" in params
-        ? [params.shape.id ?? "anonymous"]
+        ? [params.shape.id ?? `${WHOLE_CALL_KEY}${action}`]
         : "moves" in params
           ? params.moves.map((move) => move.id)
           : "ids" in params
             ? params.ids
-            : [action];
+            : [`${WHOLE_CALL_KEY}${action}`];
 
   return ids.map((id) => id.replace(/^shape:/, ""));
+};
+
+/**
+ * A rejection as people read it: the browser's sentence and its lint messages, without the measured bounds it attaches
+ * for the model.
+ */
+const failureSummary = (message: string): string => {
+  const detailStart = message.indexOf(" {");
+  const sentence = detailStart < 0 ? message : message.slice(0, detailStart);
+
+  const lints = [...message.slice(sentence.length).matchAll(/"message":"((?:[^"\\]|\\.)*)"/g)].map(
+    (match) => match[1],
+  );
+
+  const summary = lints.length > 0 ? `${sentence} ${lints.join("; ")}` : sentence;
+
+  return summary.length <= MAX_FAILURE_LENGTH
+    ? summary
+    : `${summary.slice(0, MAX_FAILURE_LENGTH - 1)}…`;
 };
 
 /**
@@ -98,7 +122,10 @@ export const createCanvasTurnGuard = (request: RequestCanvas): CanvasTurnGuard =
             );
           }
 
-          for (const key of mutationKeys) state.failures.delete(key);
+          for (const key of [...mutationKeys, ...state.failures.keys()]) {
+            if (mutationKeys.includes(key) || key.startsWith(WHOLE_CALL_KEY))
+              state.failures.delete(key);
+          }
         }
 
         return result;
@@ -126,7 +153,8 @@ export const createCanvasTurnGuard = (request: RequestCanvas): CanvasTurnGuard =
 
   return {
     requestFor,
-    failuresOf: (promptId) => [...new Set(turns.get(promptId)?.failures.values())],
+    failuresOf: (promptId) =>
+      [...new Set(turns.get(promptId)?.failures.values())].map(failureSummary),
     forget: (promptId) => {
       turns.delete(promptId);
     },

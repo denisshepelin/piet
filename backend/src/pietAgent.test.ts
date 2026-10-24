@@ -19,6 +19,7 @@ import {
   type Models,
 } from "@earendil-works/pi-ai";
 import { MemoryStorage } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type {
   CanvasAction,
   CanvasActionParams,
@@ -128,7 +129,12 @@ const until = async (condition: () => boolean, what: string): Promise<void> => {
 
 const setup = async (
   route: FauxResponseStep,
-  options: { tokensPerSecond?: number; wrapModels?: (models: Models) => Models } = {},
+  options: {
+    tokensPerSecond?: number;
+    wrapModels?: (models: Models) => Models;
+    /** SQLite session file shared across setups, for restarts; in-memory storage otherwise. */
+    sessionPath?: string;
+  } = {},
 ) => {
   const workspace = await mkdtemp(join(tmpdir(), "piet-agent-"));
 
@@ -157,7 +163,10 @@ const setup = async (
 
   const session = await openPietHarness(
     {
-      storage: new MemoryStorage(),
+      storage:
+        options.sessionPath === undefined
+          ? new MemoryStorage()
+          : await openNodeSqliteStorage(options.sessionPath),
       models: options.wrapModels?.(models) ?? models,
       workspace,
       requestCanvas,
@@ -411,6 +420,40 @@ test("a fresh start resets every client and the model's context", async () => {
     );
   } finally {
     await piet.close();
+  }
+});
+
+test("a response running when the backend stops continues after a restart and shows as running again", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "piet-restart-"));
+  const sessionPath = join(directory, "session.sqlite");
+
+  const first = await setup(
+    () => fauxAssistantMessage([fauxText("A long answer that keeps streaming. ".repeat(30))]),
+    { tokensPerSecond: 20, sessionPath },
+  );
+
+  await first.agent.handle({ type: "prompt", id: "p1", text: "Explain", canvasContext });
+  await until(() => first.runs("p1").some((run) => run.status === "running"), "the response");
+  await first.close();
+
+  assert.equal(
+    first.messages.some((message) => message.type === "error"),
+    false,
+    "stopping the backend must not fail the response",
+  );
+
+  const second = await setup(() => fauxAssistantMessage([fauxText("Resumed answer.")]), {
+    sessionPath,
+  });
+
+  try {
+    await until(() => second.done("p1"), "the resumed response");
+
+    assert.equal(second.runs("p1")[0]?.status, "running");
+    assert.equal(resultOf(second.runs("p1").at(-1)), "Resumed answer.");
+  } finally {
+    await second.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
