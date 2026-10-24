@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
@@ -17,6 +17,10 @@ if (args.includes("--help") || args.includes("-h")) {
 Start Piet in the current folder, or in the supplied directory.
 The web UI uses the first available port starting at 5173.
 Use --port <port> to require a specific web UI port. Press Ctrl+C to stop.
+
+Piet uses pi's model providers and credentials (~/.pi). When none are
+configured, piet asks you to sign in to a provider before it starts.
+Conversations persist in <directory>/.piet/session.sqlite.
 
 Requires dependencies and the protocol build in the Piet checkout:
   pnpm install
@@ -105,6 +109,15 @@ try {
   console.error(`Piet CLI: ${error.message}`);
   process.exit(1);
 }
+
+// Piet runs on pi's provider credentials; without any, sign in before the servers start.
+const signIn = spawnSync(
+  process.execPath,
+  ["--import", tsxLoader, join(repositoryDirectory, "backend/src/piAuth.ts")],
+  { cwd: workingDirectory, env: process.env, stdio: "inherit" },
+);
+
+if (signIn.status !== 0) process.exit(signIn.status ?? 1);
 
 const webOrigin = `http://127.0.0.1:${webPort}`;
 

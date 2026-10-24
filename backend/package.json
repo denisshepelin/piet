@@ -12,8 +12,10 @@
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1",
-    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
     "@piet/protocol": "workspace:*",
     "typebox": "^1.1.38",
     "ws": "^8.21.1"
