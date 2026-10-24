@@ -106,6 +106,14 @@ const withStreamedToolArguments = (models: Models): Models =>
     return stream;
   });
 
+/** Every user and assistant text a model request carries, for checking what the model sees. */
+const contextText = (messages: readonly Message[]): string =>
+  messages
+    .flatMap((message) =>
+      message.role === "toolResult" || message.role === "system" ? [] : [lastText([message])],
+    )
+    .join("\n");
+
 /** Waits for a condition the agent reaches asynchronously, failing after a few seconds. */
 const until = async (condition: () => boolean, what: string): Promise<void> => {
   for (let tries = 0; tries < 500; tries += 1) {
@@ -320,12 +328,17 @@ test("a delegated task runs as a worker and its result returns to the main agent
   }
 });
 
-test("cancelling a queued and a running response leaves the conversation ready for the next request", async () => {
+test("cancelling a queued and a running response rewinds it before the next request", async () => {
+  const requests: string[] = [];
+
   const piet = await setup(
-    (request) =>
-      lastText(request.messages).includes("quick")
+    (request) => {
+      requests.push(contextText(request.messages));
+
+      return lastText(request.messages).includes("quick")
         ? fauxAssistantMessage([fauxText("Quick answer.")])
-        : fauxAssistantMessage([fauxText("A very long answer that keeps streaming. ".repeat(40))]),
+        : fauxAssistantMessage([fauxText("A very long answer that keeps streaming. ".repeat(40))]);
+    },
     { tokensPerSecond: 20 },
   );
 
@@ -353,6 +366,49 @@ test("cancelling a queued and a running response leaves the conversation ready f
     await until(() => piet.done("next"), "the next response");
 
     assert.equal(piet.runs("next").at(-1)?.status, "done");
+
+    const next = requests.at(-1) ?? "";
+
+    assert.match(next, /Something quick/);
+    assert.doesNotMatch(next, /Explain at length|keeps streaming|Explain again/);
+  } finally {
+    await piet.close();
+  }
+});
+
+test("a fresh start resets every client and the model's context", async () => {
+  const requests: string[] = [];
+
+  const piet = await setup((request) => {
+    requests.push(contextText(request.messages));
+
+    return fauxAssistantMessage([fauxText("Noted.")]);
+  });
+
+  try {
+    await piet.agent.handle({
+      type: "prompt",
+      id: "p1",
+      text: "Remember the number 42",
+      canvasContext,
+    });
+    await until(() => piet.done("p1"), "the first response");
+
+    await piet.agent.handle({ type: "new_conversation" });
+    assert.ok(piet.messages.some((message) => message.type === "conversation_reset"));
+
+    await piet.agent.handle({ type: "prompt", id: "p2", text: "Which number?", canvasContext });
+    await until(() => piet.done("p2"), "the response after the fresh start");
+
+    assert.doesNotMatch(requests.at(-1) ?? "", /42/);
+
+    const replay: ServerMessage[] = [];
+    await piet.agent.attach((message) => replay.push(message));
+
+    assert.deepEqual(
+      replay.flatMap((message) => (message.type === "run_update" ? [message.run.runId] : [])),
+      ["p2"],
+    );
   } finally {
     await piet.close();
   }

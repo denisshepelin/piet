@@ -64,6 +64,15 @@ export const reduceAgentMessage = (state: ChatState, message: ServerMessage): Ch
       return { ...state, models: message.available, roles: message.roles };
     case "main_state":
       return { ...state, busy: message.busy };
+    case "conversation_reset":
+      return {
+        ...createChatState(),
+        ready: state.ready,
+        actor: state.actor,
+        models: state.models,
+        roles: state.roles,
+        noticeSequence: state.noticeSequence,
+      };
     case "run_update": {
       const { run } = message;
 
@@ -169,7 +178,7 @@ export const disconnectChatState = (state: ChatState, now: number): ChatState =>
       ? {
           ...run,
           status: "cancelled",
-          reason: "Connection closed; this task was stopped",
+          reason: "Connection closed; reload to follow this task",
           updatedAt: now,
           sequence: run.sequence + 1,
         }

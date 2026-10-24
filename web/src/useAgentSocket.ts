@@ -35,6 +35,8 @@ export type AgentChat = Omit<ChatState, "closedPrompts" | "dismissedRuns"> & {
   dismissRun: (runId: string) => void;
   cancelRun: (runId: string) => void;
   retryRun: (runId: string) => void;
+  /** Stops all work and starts a new conversation on every connected client; the canvas stays. */
+  startFresh: () => void;
   send: (text: string, canvasContext: PromptCanvasContext) => void;
   setModel: (role: AgentRole, selection: ModelRef) => void;
   setThinking: (role: AgentRole, level: ModelThinkingLevel) => void;
@@ -227,6 +229,9 @@ export const useAgentSocket = (url: string): AgentChat => {
     },
     retryRun: (runId) => {
       sendRaw({ type: "retry_run", runId });
+    },
+    startFresh: () => {
+      sendRaw({ type: "new_conversation" });
     },
     setModel: (role, selection) => {
       sendRaw({ type: "set_model", role, provider: selection.provider, modelId: selection.id });

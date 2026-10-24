@@ -53,6 +53,14 @@ const MAX_STEP_LENGTH = 96;
 
 const MAX_ASSISTANT_TEXT = 20_000;
 
+const REWIND_SCAN_LIMIT = 256;
+
+/** Transcript entry that hides a cancelled request from the model; the transcript keeps what it hides. */
+const REWIND_ENTRY = "piet.rewind";
+
+/** Entries a cancelled request and its run contribute to model context. */
+const REWOUND_KINDS = new Set([CANVAS_PROMPT_ENTRY, "pi.assistant", "pi.tool-result"]);
+
 const context = BACKGROUND_CONTEXT;
 
 type Client = (message: ServerMessage) => void;
@@ -65,6 +73,8 @@ type ResponseTurn = {
   submissionId?: SubmissionId;
   /** Whether its submission's settlement is followed; a response submitted elsewhere binds it at its run's start. */
   followed: boolean;
+  /** Whether its input was placed, so cancelling it leaves entries to rewind. */
+  started: boolean;
   run: RunSnapshot;
   assistantText: string;
   cancelReason?: string;
@@ -166,6 +176,8 @@ export class PietAgent {
   #runTaskId: TaskId | undefined;
   #inboxSize = 0;
   #busy = false;
+  /** Runs created before the last fresh start belong to the discarded conversation. */
+  #freshSince = 0;
   #stops: (() => Promise<void>)[] = [];
 
   /** The session must be open; `start()` begins following it. */
@@ -267,6 +279,10 @@ export class PietAgent {
         await this.#setThinking(message.role, message.level);
 
         return;
+      case "new_conversation":
+        await this.#startFresh();
+
+        return;
       default:
         return;
     }
@@ -300,6 +316,7 @@ export class PietAgent {
       prompt,
       content,
       followed: true,
+      started: false,
       assistantText: "",
       run: {
         runId: prompt.promptId,
@@ -352,6 +369,7 @@ export class PietAgent {
     const settled = await settlementOf(submission);
 
     if (turn.cancelReason !== undefined) {
+      if (turn.started) await this.#rewind(turn.prompt.promptId);
       this.#finish(turn, { ...turn.run, status: "cancelled", reason: turn.cancelReason });
     } else if (settled.status === "done") {
       const failures = this.#session.guard.failuresOf(turn.prompt.promptId);
@@ -383,6 +401,8 @@ export class PietAgent {
     clearTimeout(turn.deadline);
     this.#session.guard.forget(turn.prompt.promptId);
 
+    if (this.#turns.get(turn.prompt.promptId) !== turn) return;
+
     if (isActive(turn.run) || turn.run.status === run.status) this.#publish(turn, run);
 
     if (run.status === "error") {
@@ -406,6 +426,7 @@ export class PietAgent {
       prompt,
       content,
       followed: false,
+      started: false,
       assistantText: "",
       run: {
         runId: prompt.promptId,
@@ -426,6 +447,7 @@ export class PietAgent {
 
     if (turn.run.status !== "queued") return;
     this.#current = turn;
+    turn.started = true;
     turn.assistantText = "";
     turn.deadline = setTimeout(
       () => void this.#cancelTurn(turn, "Response exceeded its two-minute deadline"),
@@ -612,6 +634,57 @@ export class PietAgent {
     }
   }
 
+  /**
+   * Hides a cancelled request and everything its run added from later model requests, up to the next request. The
+   * edit applies at the conversation's next boundary; the transcript keeps the entries.
+   */
+  async #rewind(promptId: string): Promise<void> {
+    const { root } = this.#session;
+    const page = await root.entries({}, REWIND_SCAN_LIMIT, undefined, context);
+    const start = page.items.findIndex((entry) => canvasPromptOf(entry)?.promptId === promptId);
+
+    if (start < 0) return;
+    const fromPrompt = page.items.slice(0, start + 1).toReversed();
+
+    const next = fromPrompt.findIndex(
+      (entry, index) => index > 0 && canvasPromptOf(entry) !== undefined,
+    );
+
+    const span = next < 0 ? fromPrompt : fromPrompt.slice(0, next);
+
+    const edits = span.flatMap((entry) =>
+      REWOUND_KINDS.has(entry.kind) ? [{ target: entry.id, action: "omit" as const }] : [],
+    );
+
+    if (edits.length === 0) return;
+    await root.submit(
+      { type: "write", entry: { kind: REWIND_ENTRY, data: { promptId }, edits } },
+      context,
+    );
+  }
+
+  /**
+   * Stops all work, background tasks included, and starts the main agent on an empty context. Older entries stay in
+   * storage; the canvas is the browser's and is kept.
+   */
+  async #startFresh(): Promise<void> {
+    const { root } = this.#session;
+
+    this.#freshSince = Date.now();
+
+    for (const turn of this.#turns.values()) clearTimeout(turn.deadline);
+    this.#turns.clear();
+    this.#current = undefined;
+    await root.abort(context, { background: true });
+    await root.reset(undefined, context);
+    await root.commit(async (tx) => {
+      (await tx.doc(WorkersDoc, root.id)).runs = {};
+    }, context);
+    await Promise.all([...this.#workerWatches.keys()].map((runId) => this.#unfollowWorker(runId)));
+    this.#workerSequence.clear();
+    this.#broadcast({ type: "conversation_reset" });
+  }
+
   async #cancel(runId: string): Promise<void> {
     const turn = this.#turns.get(runId);
 
@@ -665,6 +738,7 @@ export class PietAgent {
   }
 
   #publishWorker(run: WorkerRun): void {
+    if (run.createdAt < this.#freshSince) return;
     this.#workerSequence.set(run.runId, (this.#workerSequence.get(run.runId) ?? 0) + 1);
     this.#broadcast({ type: "run_update", run: this.#workerRun(run) });
   }

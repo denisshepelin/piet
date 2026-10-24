@@ -13,6 +13,7 @@ Run `pnpm build` to build packages in dependency order. `pnpm dev` starts protoc
 - `prompt { id, text, canvasContext }`
 - `cancel_run { runId }`
 - `retry_run { runId }`
+- `new_conversation`: abort all work, including background tasks, and start the agent on a fresh context; the canvas is kept
 - `set_model { role, provider, modelId }`
 - `set_thinking { role, level }`
 - `canvas_response { requestId, ok: true, result }`
@@ -27,6 +28,7 @@ Run `pnpm build` to build packages in dependency order. `pnpm dev` starts protoc
 - `ready { actor }`
 - `model_state { available, roles }`, with minimal UI model information and main/worker role settings
 - `main_state { busy }`
+- `conversation_reset`: the conversation started fresh; clients drop their runs and messages
 - `text_delta`, `tool_start`, `tool_end`, `prompt_done`, scoped by `promptId`
 - `run_update { run }`, containing a complete task snapshot
 - `canvas_request { requestId, actor, pageId, contextId, deadlineAt, action, params, expectedShapes?, style? }`

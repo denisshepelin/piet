@@ -496,6 +496,7 @@ const clientSchema = Type.Union([
   Type.Object({ type: Type.Literal("set_thinking"), role, level: thinking }),
   Type.Object({ type: Type.Literal("cancel_run"), runId: id }),
   Type.Object({ type: Type.Literal("retry_run"), runId: id }),
+  Type.Object({ type: Type.Literal("new_conversation") }),
   Type.Object({
     type: Type.Literal("client_log"),
     events: Type.Array(clientLog, { maxItems: 100 }),
@@ -526,6 +527,7 @@ const serverOtherSchema = Type.Union([
   }),
   Type.Object({ type: Type.Literal("prompt_done"), promptId: id }),
   Type.Object({ type: Type.Literal("main_state"), busy: Type.Boolean() }),
+  Type.Object({ type: Type.Literal("conversation_reset") }),
   Type.Object({ type: Type.Literal("canvas_cancel"), requestId: id }),
   runUpdate,
   Type.Object({ type: Type.Literal("error"), promptId: Type.Optional(id), message: text }),

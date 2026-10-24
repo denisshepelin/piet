@@ -4,6 +4,7 @@ import { commentToolOverrides } from "@tldraw/commenting";
 import "tldraw/tldraw.css";
 import "@tldraw/commenting/commenting.css";
 import { ChatSidebar } from "./ChatSidebar.tsx";
+import { FreshStartButton } from "./FreshStartButton.tsx";
 import { canvasUiComponents, CanvasUiProvider } from "./CanvasUiLayer.tsx";
 import { PietMark } from "./PietMark.tsx";
 import { PietWordmark } from "./PietWordmark.tsx";
@@ -33,18 +34,21 @@ export const App = (): ReactElement => {
           overrides={commentToolOverrides}
         >
           <TldrawAgentBridge setCanvasRequestHandler={chat.setCanvasRequestHandler} />
-          <button
-            className="piet-inspector-toggle"
-            type="button"
-            onPointerDown={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
-            onClick={() => setInspectorOpen((open) => !open)}
-            aria-label={inspectorOpen ? "Close Piet inspector" : "Open Piet inspector"}
-            aria-pressed={inspectorOpen}
-          >
-            <PietMark size={30} />
-            <PietWordmark />
-          </button>
+          <div className="piet-brand">
+            <button
+              className="piet-inspector-toggle"
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+              onClick={() => setInspectorOpen((open) => !open)}
+              aria-label={inspectorOpen ? "Close Piet inspector" : "Open Piet inspector"}
+              aria-pressed={inspectorOpen}
+            >
+              <PietMark size={30} />
+              <PietWordmark />
+            </button>
+            <FreshStartButton onConfirm={chat.startFresh} disabled={!chat.ready} />
+          </div>
           {inspectorOpen && <ChatSidebar chat={chat} onClose={() => setInspectorOpen(false)} />}
         </Tldraw>
       </CanvasUiProvider>

@@ -78,3 +78,19 @@ test("only terminal tasks can be dismissed and stale snapshots cannot revive the
   state = reduceAgentMessage(state, { type: "run_update", run: task });
   assert.deepEqual(state.runs, []);
 });
+
+test("a fresh start drops runs and messages but keeps the connection and model settings", () => {
+  let state = reduceAgentMessage(createChatState(), {
+    type: "ready",
+    actor: { id: "main:piet", name: "Main agent", color: "#2563eb" },
+  });
+
+  state = reduceAgentMessage(state, { type: "run_update", run: task });
+  state = reduceAgentMessage(state, { type: "text_delta", promptId: "prompt:a", delta: "Hi" });
+  state = reduceAgentMessage(state, { type: "conversation_reset" });
+
+  assert.equal(state.ready, true);
+  assert.equal(state.actor?.id, "main:piet");
+  assert.deepEqual(state.runs, []);
+  assert.deepEqual(state.messages, []);
+});

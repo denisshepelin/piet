@@ -102,7 +102,8 @@ button {
 .piet-window-button,
 .piet-icon-button,
 .piet-tab,
-.piet-inspector-toggle {
+.piet-inspector-toggle,
+.piet-fresh-start {
   border: 1px solid var(--piet-border);
   border-radius: 7px;
   background: var(--piet-control-background);
@@ -337,7 +338,8 @@ button {
 
 .piet-window-button:hover:not(:disabled),
 .piet-icon-button:hover,
-.piet-tab:hover {
+.piet-tab:hover,
+.piet-fresh-start:hover {
   background: var(--piet-control-hover);
 }
 
@@ -345,24 +347,48 @@ button {
   margin-left: auto;
 }
 
-.piet-inspector-toggle {
+.piet-brand {
   position: absolute;
   top: 58px;
   left: 16px;
   z-index: var(--tl-layer-canvas-in-front);
   display: flex;
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.piet-inspector-toggle {
+  display: flex;
   align-items: center;
   gap: 8px;
   padding: 5px 12px 5px 6px;
   color: var(--piet-text);
-  pointer-events: auto;
 }
 
-.piet-app .piet-inspector-toggle {
+.piet-fresh-start {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--piet-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.piet-fresh-start[data-armed="true"] {
+  border-color: var(--piet-black);
+  background: var(--piet-red);
+  color: var(--piet-white);
+}
+
+.piet-app :is(.piet-inspector-toggle, .piet-fresh-start) {
   box-shadow: 3px 3px 0 var(--piet-black);
 }
 
-.piet-app .piet-inspector-toggle[aria-pressed="true"] {
+.piet-app .piet-inspector-toggle[aria-pressed="true"],
+.piet-app .piet-fresh-start:active {
   transform: translate(3px, 3px);
   box-shadow: none;
 }
@@ -767,7 +793,7 @@ button {
     width: min(320px, calc(100% - 20px));
   }
 
-  .piet-inspector-toggle {
+  .piet-brand {
     top: 54px;
     left: 10px;
   }
