@@ -24,11 +24,7 @@ import {
 import { formatCanvasModelContext } from "./canvasModelContext.js";
 import { CANVAS_FINDINGS_SUMMARY_GUIDANCE, WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
 
-const MAX_ACTIVE_WORKERS = 8;
-
 const MAX_RETAINED_WORKERS = 64;
-
-const WORKER_DEADLINE_MS = 5 * 60 * 1000;
 
 const MAX_RESULT_LENGTH = 20_000;
 
@@ -181,17 +177,7 @@ export const WorkerTask = defineTask<WorkerInput, WorkerState, null>({
         context,
       );
 
-      let deadlineExceeded = false;
-
-      const stopAtDeadline = runtime.setTimer(
-        () => {
-          deadlineExceeded = true;
-          void child.abort(context).catch(() => undefined);
-        },
-        Math.max(0, run.createdAt + WORKER_DEADLINE_MS - runtime.now()),
-      );
-
-      const settled = await submission.wait(context).finally(stopAtDeadline);
+      const settled = await submission.wait(context);
 
       await runtime.commit(async (tx) => {
         const current = await readRun(tx, runtime.conversationId, task.input.runId);
@@ -203,9 +189,8 @@ export const WorkerTask = defineTask<WorkerInput, WorkerState, null>({
           // SAFETY: an answered input's answer entry holds the assistant message that answered it.
           settleRun(current, "done", boundedResult(answerText(answer as AssistantMessage)), now);
         } else {
-          const reason = deadlineExceeded
-            ? "deadline exceeded"
-            : settled.status === "unanswered"
+          const reason =
+            settled.status === "unanswered"
               ? `Background task failed: ${settled.reason}`
               : "Background task ended without a result.";
 
@@ -289,11 +274,6 @@ export const startWorker = async (
   now: number,
 ): Promise<WorkerRun> => {
   const workers = await tx.doc(WorkersDoc, conversationId);
-
-  if (Object.values(workers.runs).filter(isActive).length >= MAX_ACTIVE_WORKERS) {
-    throw new Error(`At most ${MAX_ACTIVE_WORKERS} background tasks may be active.`);
-  }
-
   const runId = randomUUID();
 
   const run: WorkerRun = {

@@ -49,7 +49,7 @@ Text answers go on the canvas as tldraw comments, not chat. The main agent calls
 
 Piet threads (started by the agent, shown with the Piet mark) are conversations with the agent; threads the user starts with the comment tool are regular tldraw comments and never reach the model. Every prompt carries the open Piet threads on the page (`comments`: position, distance from the anchor, recent messages), and a thread whose first request had exactly this selection is flagged `sameSelection`, or `sharedSelection` when the selections overlap. The `put_comment` guidelines tell the model to reply in a thread when the selection is same or shared, the thread's pin is within about 150 px of the anchor, or nothing is selected and the question plainly continues it, and to start a new thread for a different shape or part. `put_comment` takes an optional `threadId` to reply in one of them, or `"new"` to start a new thread. Without it, the answer goes to the thread the user replied in, then the thread this request already used, then the same-selection thread, and otherwise a new thread. A thread follows newer content only for the request that started it. When the user replies in a Piet thread, the reply is sent as a prompt anchored at the thread with its whole conversation (`thread`), and the answer lands in that thread. `<Tldraw persistenceKey>` cannot register the comment record types, so the app builds its persisted store with tldraw's internal `useLocalStore` (`web/src/canvasStore.ts`), keeping the same IndexedDB document.
 
-Main turns have a two-minute deadline. At most eight background tasks are active at once, each with a five-minute deadline from its creation; workers start at once, without a queue of executing slots. Cancellation and late-result isolation remain task-scoped. Failed tasks stay visible with retry/dismiss controls. Clean completions move to inspector history.
+Main turns have a two-minute deadline. Background tasks have no count or time limit; each starts at once and runs until it answers, fails, or is cancelled. A cancelled or timed-out main response is rewound: a `piet.rewind` entry omits the request and everything its run added from later model requests, so the model never sees the abandoned turn; the transcript keeps it. Cancellation and late-result isolation remain task-scoped. Failed tasks stay visible with retry/dismiss controls. Clean completions move to inspector history.
 
 ## Canvas safety
 
@@ -63,6 +63,8 @@ Browser execution is deterministic application code, not an agent. PNG observati
 
 The conversation, its queued requests, workers, and their results are durable: they live in a pi-durable Harness stored in `<workspace>/.piet/session.sqlite` (`PIET_SESSION_PATH` overrides it). Disconnecting or reloading the browser no longer aborts anything; a reconnecting browser receives the current runs and continues the same conversation. Restarting the backend resumes unfinished work from its last checkpoint: a model request is retried, a worker continues, and a canvas tool call that was cut off returns an `interrupted` error to the model, because canvas writes are not safe to replay. Canvas tools act on the newest connected browser; with none connected they fail. There is no cross-device sync or collaboration server.
 
+The **New** button beside the Piet logo starts fresh after a second click to confirm: it aborts all work, background tasks included, resets the main conversation to an empty context (`reset()`), clears the task list, and tells every connected browser to drop its runs and messages. The canvas and its comments stay; older entries stay in storage.
+
 ## Durable session
 
 `backend/src/pietHarness.ts` opens the Harness; `backend/src/pietAgent.ts` bridges it to the browser protocol.
@@ -73,7 +75,8 @@ The conversation, its queued requests, workers, and their results are durable: t
 | User prompt                        | An input submitted with `requestId` = prompt id and a `piet.prompt` entry carrying the canvas context  |
 | Response queue                     | The conversation inbox (`whenBusy: "followUp"`): one run per input                                     |
 | Canvas request context             | The newest `piet.prompt` entry of the conversation, read by each tool call                             |
-| Cancel a queued / running response | `abortSubmission()` / `abortTask()` of the run                                                         |
+| Cancel a queued / running response | `abortSubmission()` / `abortTask()` of the run, then a write whose `edits` omit the cancelled span     |
+| Fresh start                        | `abort({ background: true })`, then `reset()`                                                          |
 | `spawn_task` worker                | A background `piet.worker` task that owns a child conversation with `CodingTools`                      |
 | Worker result                      | A follow-up input the worker task submits to the root conversation (`requestId` keeps it exactly-once) |
 | Worker list and model              | The `piet.workers` document of the root conversation                                                   |

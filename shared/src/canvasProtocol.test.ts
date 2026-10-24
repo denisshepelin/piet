@@ -119,3 +119,7 @@ test("cancel and retry commands require a run identity", () => {
     assert.equal(parseClientMessage(JSON.stringify({ type })).ok, false);
   }
 });
+
+test("a fresh start carries no parameters", () => {
+  assert.equal(parseClientMessage(JSON.stringify({ type: "new_conversation" })).ok, true);
+});
