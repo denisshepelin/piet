@@ -17,6 +17,7 @@ if (args.includes("--help") || args.includes("-h")) {
 Start Piet in the current folder, or in the supplied directory.
 The web UI uses the first available port starting at 5173.
 Use --port <port> to require a specific web UI port. Press Ctrl+C to stop.
+Set VITE_WS_URL and PIET_WEB_ORIGIN to reach Piet through another host, such as Tailscale.
 
 Piet uses pi's model providers and credentials (~/.pi). When none are
 configured, piet asks you to sign in to a provider before it starts.
@@ -173,12 +174,15 @@ startPietProcess(
   "backend",
   ["--import", tsxLoader, join(repositoryDirectory, "backend/src/index.ts")],
   workingDirectory,
-  { ...process.env, PIET_WEB_ORIGIN: webOrigin },
+  {
+    ...process.env,
+    PIET_WEB_ORIGIN: [webOrigin, process.env.PIET_WEB_ORIGIN].filter(Boolean).join(","),
+  },
 );
 
 startPietProcess(
   "web server",
   [viteCli, "--host", "127.0.0.1", "--port", String(webPort), "--strictPort", "--open"],
   join(repositoryDirectory, "web"),
-  { ...process.env, VITE_WS_URL: `ws://localhost:${backendPort}` },
+  { ...process.env, VITE_WS_URL: process.env.VITE_WS_URL ?? `ws://localhost:${backendPort}` },
 );

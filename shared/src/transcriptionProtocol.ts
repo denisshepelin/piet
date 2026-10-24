@@ -11,6 +11,13 @@ export const transcriptionLimits = {
   textCharacters: 100_000,
 } as const;
 
+/** Binary recording frames are raw mono signed 16-bit little-endian PCM at this rate. */
+export const transcriptionAudio = {
+  format: "pcm_s16le",
+  sampleRate: 16_000,
+  channels: 1,
+} as const;
+
 const transcriptText = Type.String({ maxLength: transcriptionLimits.textCharacters });
 
 const transcriptionEventSchema = Type.Union([

@@ -261,6 +261,10 @@ html:has(.sg-body),
   width: min(360px, 100%);
 }
 
+.sg-voice-bar {
+  align-self: stretch;
+}
+
 .sg-fill-width {
   width: 100%;
   align-self: stretch;

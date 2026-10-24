@@ -126,7 +126,7 @@ const VOICE_PHASES: {
     pressed: true,
     disabled: false,
     label: "Recording",
-    note: "Red · pressed in · outline breathes",
+    note: "Red · while held",
   },
   {
     phase: "finishing",
@@ -241,14 +241,14 @@ const ConceptComposition = ({ animate }: { animate: boolean }): ReactElement => 
   </svg>
 );
 
-const VoiceButton = ({
+const VoiceRecordButton = ({
   phase,
-  pressed,
-  disabled,
+  pressed = phase === "recording",
+  disabled = false,
 }: {
   phase: string;
-  pressed: boolean;
-  disabled: boolean;
+  pressed?: boolean;
+  disabled?: boolean;
 }): ReactElement => (
   <button
     className="piet-button piet-voice__record"
@@ -263,6 +263,20 @@ const VoiceButton = ({
       <path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8 21h8" />
     </svg>
   </button>
+);
+
+const VoiceButton = ({
+  phase,
+  pressed,
+  disabled,
+}: {
+  phase: string;
+  pressed: boolean;
+  disabled: boolean;
+}): ReactElement => (
+  <div className="piet-voice__bar">
+    <VoiceRecordButton phase={phase} pressed={pressed} disabled={disabled} />
+  </div>
 );
 
 const AnswerIndicator = ({ animate }: { animate: boolean }): ReactElement => (
@@ -874,7 +888,7 @@ export const Styleguide = (): ReactElement => {
             id="voice"
             index={7}
             title="Voice"
-            lede="Talk or type. One solid square with one glyph; its color reports the phase. Hold to talk: it presses into the page and a red outline slowly breathes while it listens. The field below shows the live transcript, and takes typed or externally dictated text the rest of the time."
+            lede="Talk or type in one bar: the field, then the microphone at its end, whose color reports the phase. Hold to talk, release to send; the field shows the live transcript. Stop appears beside the microphone while a request runs. Status lines stack above the bar, so the bar never moves."
             accent="red"
           >
             <div className="sg-grid sg-grid--5">
@@ -884,25 +898,54 @@ export const Styleguide = (): ReactElement => {
                 </Specimen>
               ))}
             </div>
-            <Specimen label="Composer hints" wide>
+            <Specimen label="Request bar" wide>
               <div className="sg-stack">
-                <div className="piet-composer__hint">
-                  Hold to talk · release to send, or type and press Enter.
+                <div className="piet-voice__bar sg-voice-bar">
+                  <textarea
+                    className="piet-voice__transcript"
+                    aria-label="Canvas request, empty"
+                    placeholder="Type, or hold the mic to talk…"
+                    rows={1}
+                  />
+                  <VoiceRecordButton phase="idle" />
                 </div>
-                <textarea
-                  className="piet-voice__transcript"
-                  aria-label="Canvas request, empty"
-                  placeholder="Type or dictate a request…"
-                  rows={1}
-                />
-                <textarea
-                  className="piet-voice__transcript"
-                  aria-label="Canvas request, live transcript"
-                  rows={1}
-                  readOnly
-                  value="How does the login flow work? Draw it…"
-                />
+                <div className="piet-composer__hint">
+                  Recording · release to send · Escape to cancel
+                </div>
+                <div className="piet-voice__bar sg-voice-bar">
+                  <textarea
+                    className="piet-voice__transcript"
+                    aria-label="Canvas request, live transcript"
+                    rows={1}
+                    readOnly
+                    value="How does the login flow work? Draw it…"
+                  />
+                  <VoiceRecordButton phase="recording" />
+                </div>
                 <div className="piet-composer__hint">2 tasks running</div>
+                <div className="piet-voice__bar sg-voice-bar">
+                  <textarea
+                    className="piet-voice__transcript"
+                    aria-label="Canvas request, tasks running"
+                    placeholder="Type, or hold the mic to talk…"
+                    rows={1}
+                  />
+                  <button
+                    className="piet-button piet-voice__stop"
+                    type="button"
+                    aria-label="Stop, specimen"
+                  >
+                    <svg
+                      className="piet-voice__stop-icon"
+                      viewBox="0 0 12 12"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <rect x="1" y="1" width="10" height="10" />
+                    </svg>
+                  </button>
+                  <VoiceRecordButton phase="idle" />
+                </div>
               </div>
             </Specimen>
           </Section>

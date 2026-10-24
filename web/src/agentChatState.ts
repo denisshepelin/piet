@@ -165,6 +165,30 @@ export const reduceAgentMessage = (state: ChatState, message: ServerMessage): Ch
   }
 };
 
+/**
+ * A stopped response is dropped from the main agent's conversation, so its messages are no longer
+ * model context. A retry resends the request, which brings the user's prompt back.
+ */
+export const isStoppedChatMessage = (
+  message: ChatMessage,
+  runs: readonly RunSnapshot[],
+): boolean => {
+  const turn = runs.find((run) => run.runId === message.promptId);
+
+  if (turn?.status !== "cancelled") return false;
+
+  return (
+    message.role !== "user" ||
+    !runs.some(
+      (run) =>
+        run.promptId === turn.promptId &&
+        run.kind === "response" &&
+        run.createdAt > turn.createdAt &&
+        run.status !== "cancelled",
+    )
+  );
+};
+
 /** Disconnect cancels only unfinished tasks and retains already received results for inspection. */
 export const disconnectChatState = (state: ChatState, now: number): ChatState => ({
   ...state,

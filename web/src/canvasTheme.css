@@ -96,36 +96,43 @@
   outline-offset: 3px;
 }
 
+.piet-app .piet-voice__bar :is(button, textarea):focus-visible {
+  outline: none;
+}
+
+.piet-app .piet-voice__bar button:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--piet-yellow);
+}
+
+.piet-app .piet-voice__bar:has(textarea:focus-visible) {
+  outline: 3px solid var(--piet-blue);
+  outline-offset: 3px;
+}
+
 .piet-app .piet-button.piet-voice__record {
   position: relative;
   display: grid;
   place-items: center;
-  width: 72px;
-  height: 72px;
+  width: 52px;
+  min-height: 48px;
   flex: none;
   padding: 0;
-  border: 4px solid var(--piet-black);
+  border: 0;
+  border-left: 4px solid var(--piet-black);
+  border-radius: 0;
   background: var(--piet-blue);
   color: var(--piet-white);
-  box-shadow: 4px 4px 0 var(--piet-black);
   opacity: 1;
-  transition:
-    transform 80ms ease-out,
-    box-shadow 80ms ease-out;
+  transition: background-color 80ms ease-out;
 }
 
 .piet-voice__icon {
-  width: 34px;
-  height: 34px;
+  width: 26px;
+  height: 26px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.25px;
   stroke-linecap: square;
-}
-
-.piet-app .piet-voice__record:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: 5px 5px 0 var(--piet-black);
 }
 
 .piet-app .piet-voice__record[data-phase="connecting"],
@@ -137,14 +144,11 @@
 .piet-app .piet-voice__record[aria-pressed="true"] {
   background: var(--piet-red);
   color: var(--piet-white);
-  transform: translate(4px, 4px);
-  box-shadow: 0 0 0 var(--piet-black);
 }
 
 .piet-app .piet-voice__record:disabled:not([data-phase="finishing"]) {
   background: var(--piet-control-background);
   color: var(--piet-muted);
-  box-shadow: none;
   border-color: var(--piet-muted);
 }
 
