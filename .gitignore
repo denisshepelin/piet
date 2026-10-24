@@ -10,3 +10,4 @@ backend/logs/
 *.tsbuildinfo
 web/test-results/
 web/playwright-report/
+.piet/

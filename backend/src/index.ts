@@ -1,41 +1,40 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import type { WebSocket } from "ws";
-import { createCanvasSocketServer } from "./canvasSocketServer.js";
-import { createSonioxTranscriptionHandler } from "./sonioxTranscription.js";
-import { RedactedSecret } from "./redactedSecret.js";
-import {
-  DefaultResourceLoader,
-  ModelRuntime,
-  SettingsManager,
-  getAgentDir,
-} from "@earendil-works/pi-coding-agent";
-import { CanvasConnection } from "./canvasConnection.js";
-import { MainAgentManager } from "./mainAgentManager.js";
-import { MAIN_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT } from "./mainPrompt.js";
-import { createSessionTrace } from "./sessionTrace.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { parseClientMessage, type CanvasJsonObject, type ServerMessage } from "@piet/protocol";
+import { CanvasConnection, type RequestCanvas } from "./canvasConnection.js";
+import { createCanvasSocketServer } from "./canvasSocketServer.js";
+import type { LogEvent } from "./logger.js";
+import { DEFAULT_MAIN_MODEL, DEFAULT_WORKER_MODEL } from "./modelDefaults.js";
+import { PietAgent } from "./pietAgent.js";
+import { openPietHarness } from "./pietHarness.js";
+import { RedactedSecret } from "./redactedSecret.js";
+import { createSessionTrace } from "./sessionTrace.js";
+import { createSonioxTranscriptionHandler } from "./sonioxTranscription.js";
+import { withHostedWebSearchModels } from "./webSearch.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 
-const DEFAULT_MAIN_MODEL_PROVIDER = process.env.MAIN_MODEL_PROVIDER ?? "openai-codex";
+const workspace = process.cwd();
 
-const DEFAULT_MAIN_MODEL_ID = process.env.MAIN_MODEL_ID ?? "gpt-6-astra";
-
-const DEFAULT_MAIN_THINKING_LEVEL = "low";
-
-const DEFAULT_WORKER_MODEL_PROVIDER = process.env.WORKER_MODEL_PROVIDER ?? "openai-codex";
-
-const DEFAULT_WORKER_MODEL_ID = process.env.WORKER_MODEL_ID ?? "gpt-5.6-luna";
-
-const DEFAULT_WORKER_THINKING_LEVEL = "medium";
+const sessionPath = resolve(
+  process.env.PIET_SESSION_PATH ?? join(workspace, ".piet", "session.sqlite"),
+);
 
 const logDirectory = process.env.PIET_LOG_DIR ?? "logs";
 
 const captureTrace = process.env.PIET_CANVAS_TRACE !== "0";
 
 const mirrorStdout = process.env.PIET_LOG_STDOUT === "1";
+
+const context = BACKGROUND_CONTEXT;
+
+const actor = { id: "main:piet", name: "Main agent", color: "#2563eb" };
 
 const activeTraces = new Set<ReturnType<typeof createSessionTrace>>();
 
@@ -58,39 +57,53 @@ const readGitState = (): { revision: string; dirty: boolean } | undefined => {
 
 const gitState = readGitState();
 
-/**
- * Model runtime, settings, and resource loaders are immutable and process-scoped.
- * Settings and context files are therefore read once at startup, not per connection.
- */
+/** Agent events belong to the session, so every connected client's trace records them. */
+const logEvent: LogEvent = (record) => {
+  for (const trace of activeTraces) trace.logEvent(record);
+};
+
+/** Browser connections in connect order; canvas tools act on the newest one that is still open. */
+const canvasConnections: CanvasConnection[] = [];
+
+const requestCanvas: RequestCanvas = (action, params, requestContext, signal) => {
+  const connection = canvasConnections.at(-1);
+
+  return connection
+    ? connection.request(action, params, requestContext, signal)
+    : Promise.reject(new Error("Canvas connection is closed"));
+};
+
+/** pi's providers and credentials (`~/.pi`), with hosted web search on Responses API requests. */
 const modelRuntime = await ModelRuntime.create();
 
-const settingsManager = SettingsManager.create(process.cwd(), getAgentDir());
+const models = withHostedWebSearchModels(modelRuntime);
 
-const mainResourceLoader = new DefaultResourceLoader({
-  cwd: process.cwd(),
-  agentDir: getAgentDir(),
-  settingsManager,
-  noExtensions: true,
-  noSkills: true,
-  noPromptTemplates: true,
-  noContextFiles: true,
-  systemPromptOverride: () => MAIN_SYSTEM_PROMPT,
-  appendSystemPrompt: [],
-});
+await mkdir(dirname(sessionPath), { recursive: true });
 
-const workerResourceLoader = new DefaultResourceLoader({
-  cwd: process.cwd(),
-  agentDir: getAgentDir(),
-  settingsManager,
-  noExtensions: true,
-  noSkills: true,
-  noPromptTemplates: true,
-  noContextFiles: true,
-  systemPromptOverride: () => WORKER_SYSTEM_PROMPT,
-  appendSystemPrompt: [],
-});
+const session = await openPietHarness(
+  {
+    storage: await openNodeSqliteStorage(sessionPath),
+    models,
+    workspace,
+    requestCanvas,
+    mainModel: DEFAULT_MAIN_MODEL,
+    workerModel: DEFAULT_WORKER_MODEL,
+  },
+  context,
+);
 
-await Promise.all([mainResourceLoader.reload(), workerResourceLoader.reload()]);
+if (process.env.MAIN_MODEL_PROVIDER || process.env.MAIN_MODEL_ID) {
+  await session.root.configure(
+    { model: { provider: DEFAULT_MAIN_MODEL.provider, modelId: DEFAULT_MAIN_MODEL.modelId } },
+    context,
+  );
+}
+
+const agent = new PietAgent(session, { actor, logEvent });
+
+await agent.start();
+
+console.log(`[session] ${sessionPath}`);
 
 const wss = createCanvasSocketServer(PORT, process.env.PIET_WEB_ORIGIN);
 
@@ -105,8 +118,6 @@ const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
 };
 
-const UNLOGGED_MESSAGE_TYPES = new Set<ServerMessage["type"]>(["text_delta"]);
-
 wss.on("connection", async (socket, request) => {
   if (request.url === "/transcription") {
     handleTranscription(socket);
@@ -119,37 +130,28 @@ wss.on("connection", async (socket, request) => {
 
   const manifest: CanvasJsonObject = {
     sessionId: connId,
-    cwd: process.cwd(),
+    sessionPath,
+    cwd: workspace,
     nodeVersion: process.version,
     captureTrace,
-    mainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
-    workerModel: { provider: DEFAULT_WORKER_MODEL_PROVIDER, id: DEFAULT_WORKER_MODEL_ID },
   };
 
   if (gitState) manifest.git = gitState;
 
-  const trace = createSessionTrace({
-    directory,
-    manifest,
-    now: () => new Date(),
-    mirrorStdout,
-  });
+  const trace = createSessionTrace({ directory, manifest, now: () => new Date(), mirrorStdout });
 
   activeTraces.add(trace);
-  const { logEvent } = trace;
   console.log(`[log] session trace: ${directory}`);
   console.log(`[ws] client connected (${connId})`);
-  logEvent({ source: "backend", connId, event: "ws.connect" });
+  trace.logEvent({ source: "backend", connId, event: "ws.connect" });
 
   const sendToClient = (message: ServerMessage): void => {
-    if (!UNLOGGED_MESSAGE_TYPES.has(message.type)) {
-      logEvent({ source: "backend", connId, event: `ws.out.${message.type}`, data: message });
+    if (message.type === "canvas_request" || message.type === "canvas_cancel") {
+      trace.logEvent({ source: "backend", connId, event: `ws.out.${message.type}`, data: message });
     }
 
     send(socket, message);
   };
-
-  const actor = { id: `main:${connId}`, name: "Main agent", color: "#2563eb" };
 
   const canvasConnection = new CanvasConnection({
     actor,
@@ -158,24 +160,7 @@ wss.on("connection", async (socket, request) => {
     captureTrace,
   });
 
-  const mainAgent = new MainAgentManager({
-    actor,
-    modelRuntime,
-    settingsManager,
-    mainResourceLoader,
-    workerResourceLoader,
-    requestCanvas: canvasConnection.request.bind(canvasConnection),
-    defaultMainModel: { provider: DEFAULT_MAIN_MODEL_PROVIDER, id: DEFAULT_MAIN_MODEL_ID },
-    defaultMainThinkingLevel: DEFAULT_MAIN_THINKING_LEVEL,
-    defaultWorkerModel: {
-      provider: DEFAULT_WORKER_MODEL_PROVIDER,
-      id: DEFAULT_WORKER_MODEL_ID,
-    },
-    defaultWorkerThinkingLevel: DEFAULT_WORKER_THINKING_LEVEL,
-    connId,
-    logEvent,
-    send: sendToClient,
-  });
+  canvasConnections.push(canvasConnection);
 
   socket.on("message", async (raw) => {
     const parsed = parseClientMessage(raw.toString());
@@ -196,7 +181,7 @@ wss.on("connection", async (socket, request) => {
 
     if (message.type === "client_log") {
       for (const event of message.events) {
-        logEvent({
+        trace.logEvent({
           source: "web",
           connId,
           event: event.event,
@@ -208,12 +193,13 @@ wss.on("connection", async (socket, request) => {
     }
 
     if (message.type === "canvas_trace") {
-      if (captureTrace) logEvent({ source: "web", connId, event: "canvas.trace", data: message });
+      if (captureTrace)
+        trace.logEvent({ source: "web", connId, event: "canvas.trace", data: message });
 
       return;
     }
 
-    logEvent({ source: "backend", connId, event: `ws.in.${message.type}`, data: message });
+    trace.logEvent({ source: "backend", connId, event: `ws.in.${message.type}`, data: message });
 
     if (message.type === "canvas_response") {
       canvasConnection.handleResponse(message);
@@ -222,7 +208,7 @@ wss.on("connection", async (socket, request) => {
     }
 
     try {
-      await mainAgent.handle(message);
+      await agent.handle(message);
     } catch (error) {
       const errorMessage: ServerMessage = {
         type: "error",
@@ -234,31 +220,25 @@ wss.on("connection", async (socket, request) => {
     }
   });
 
+  const detach = await agent.attach(sendToClient);
+
   socket.on("close", () => {
     console.log(`[ws] client disconnected (${connId})`);
-    logEvent({ source: "backend", connId, event: "ws.close" });
+    trace.logEvent({ source: "backend", connId, event: "ws.close" });
+    detach();
+    canvasConnections.splice(canvasConnections.indexOf(canvasConnection), 1);
     canvasConnection.dispose();
-    mainAgent.dispose();
     void trace.close().finally(() => activeTraces.delete(trace));
   });
-
-  try {
-    await mainAgent.initialize();
-  } catch (error) {
-    mainAgent.dispose();
-    canvasConnection.dispose();
-    sendToClient({
-      type: "error",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
 });
 
 const shutdown = async (): Promise<void> => {
-  const serverClosed = new Promise<void>((resolve) => wss.close(() => resolve()));
+  const serverClosed = new Promise<void>((resolveClosed) => wss.close(() => resolveClosed()));
 
   for (const socket of wss.clients) socket.terminate();
   await serverClosed;
+  await agent.stop();
+  await session.harness.close(context);
   await Promise.all([...activeTraces].map((trace) => trace.close()));
   process.exit(0);
 };

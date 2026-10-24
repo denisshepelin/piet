@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RequestCanvas } from "./canvasConnection.js";
-import { createCanvasTools, normalizeElement } from "./canvasTools.js";
+import { createCanvasTools, normalizeElement, type CanvasToolCall } from "./canvasTools.js";
 import { isCanvasSnapshot, type PromptCanvasContext } from "@piet/protocol";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+const call = (canvasContext: PromptCanvasContext, userRequest = ""): CanvasToolCall => ({
+  toolCallId: "call-1",
+  turn: { promptId: "prompt-1", userRequest, canvasContext },
+});
 
 test("normalizeShape coerces string boolean props", () => {
   const input = {
@@ -36,19 +40,14 @@ test("get_selection returns the active turn's captured selection", async () => {
 
   let liveRequests = 0;
 
-  const { tools } = createCanvasTools(
-    async () => {
-      liveRequests += 1;
-      throw new Error("unexpected live canvas request");
-    },
-    () => context,
-  );
+  const { tools } = createCanvasTools(() => async () => {
+    liveRequests += 1;
+    throw new Error("unexpected live canvas request");
+  });
 
   const selection = tools.find(({ name }) => name === "get_selection")!;
 
-  // SAFETY: get_selection does not read the extension context.
-  const extensionContext = {} as ExtensionContext;
-  const result = await selection.execute("call-1", {}, undefined, undefined, extensionContext);
+  const result = await selection.execute({}, call(context));
 
   assert.ok(isCanvasSnapshot(result.details));
 
@@ -79,7 +78,7 @@ test("put_image resolves the source in the backend before sending a data URL to 
     } as never;
   };
 
-  const { tools } = createCanvasTools(requestCanvas, () => context, {
+  const { tools } = createCanvasTools(() => requestCanvas, {
     resolveImage: async (src) => ({
       src: "data:image/jpeg;base64,AAAA",
       mimeType: "image/jpeg",
@@ -91,15 +90,9 @@ test("put_image resolves the source in the backend before sending a data URL to 
 
   const putImage = tools.find(({ name }) => name === "put_image")!;
 
-  // SAFETY: put_image does not read the extension context.
-  const extensionContext = {} as ExtensionContext;
-
   const result = await putImage.execute(
-    "call-1",
     { src: "https://commons.example/wiki/File:Beethoven.jpg", x: 10, y: 20, w: 400 },
-    undefined,
-    undefined,
-    extensionContext,
+    call(context),
   );
 
   assert.deepEqual(sent, [
@@ -147,22 +140,12 @@ test("put_comment pins the text at the request's anchor and keeps the page conte
     return { threadId: "comment-thread:a", commentId: "comment:a", reply: false } as never;
   };
 
-  const { tools } = createCanvasTools(requestCanvas, () => context, {
-    getUserRequest: () => " What is the capital of France? ",
-  });
+  const { tools } = createCanvasTools(() => requestCanvas);
+  const request = call(context, " What is the capital of France? ");
 
   const putComment = tools.find(({ name }) => name === "put_comment")!;
 
-  // SAFETY: put_comment does not read the extension context.
-  const extensionContext = {} as ExtensionContext;
-
-  const result = await putComment.execute(
-    "call-1",
-    { text: "Paris is the capital of France." },
-    undefined,
-    undefined,
-    extensionContext,
-  );
+  const result = await putComment.execute({ text: "Paris is the capital of France." }, request);
 
   assert.deepEqual(sent, [
     {
@@ -212,33 +195,15 @@ test("put_comment points at the content this request drew, without deleted shape
     return { createdShapeIds: ["shape:root", "shape:caption", "shape:leaf"] } as never;
   };
 
-  const { tools } = createCanvasTools(requestCanvas, () => context);
+  const { tools } = createCanvasTools(() => requestCanvas);
   const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
 
-  // SAFETY: these tools do not read the extension context.
-  const extensionContext = {} as ExtensionContext;
-
   await tool("put_mermaid").execute(
-    "call-1",
     { source: "flowchart TD\n  a --> b", x: 0, y: 0 },
-    undefined,
-    undefined,
-    extensionContext,
+    call(context),
   );
-  await tool("delete_shapes").execute(
-    "call-2",
-    { ids: ["caption"] },
-    undefined,
-    undefined,
-    extensionContext,
-  );
-  await tool("put_comment").execute(
-    "call-3",
-    { text: "The flow starts at the root." },
-    undefined,
-    undefined,
-    extensionContext,
-  );
+  await tool("delete_shapes").execute({ ids: ["caption"] }, call(context));
+  await tool("put_comment").execute({ text: "The flow starts at the root." }, call(context));
 
   assert.deepEqual(comments, [
     {
@@ -278,14 +243,10 @@ test("put_comment replies in the thread the user wrote in, without repeating the
     return { threadId: "comment-thread:any", commentId: "comment:any", reply: true } as never;
   };
 
-  const { tools } = createCanvasTools(requestCanvas, () => context, {
-    getUserRequest: () => "Why?",
-  });
+  const { tools } = createCanvasTools(() => requestCanvas);
+  const request = call(context, "Why?");
 
   const putComment = tools.find(({ name }) => name === "put_comment")!;
-
-  // SAFETY: put_comment does not read the extension context.
-  const extensionContext = {} as ExtensionContext;
 
   for (const params of [
     { text: "The borrow checker." },
@@ -293,7 +254,7 @@ test("put_comment replies in the thread the user wrote in, without repeating the
     { text: "Unrelated.", threadId: "new" },
   ])
     // oxlint-disable-next-line no-await-in-loop
-    await putComment.execute("call", params, undefined, undefined, extensionContext);
+    await putComment.execute(params, request);
 
   assert.deepEqual(sent, [
     {

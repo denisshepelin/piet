@@ -3,7 +3,13 @@
 Piet is a canvas-like user interface to Pi AI agent.
 Instead of typing in TUI you draw, ask with your voice and `piet` will work with you on a canvas within browser.
 
-Piet relies on `pi` provider authentication and setup by reading `~/.pi`.
+Piet relies on `pi` provider authentication and setup by reading `~/.pi`. When no provider is
+configured, `piet` asks you to sign in to one before it starts; the credentials are stored where
+`pi` keeps them.
+
+The agent runs on [pi-durable](https://earendil.com/posts/pi-durable/): the conversation and its
+background tasks are stored in `.piet/session.sqlite` inside the folder you launch Piet in, so a
+browser reload or a backend restart continues where it left off.
 
 ## Installation
 

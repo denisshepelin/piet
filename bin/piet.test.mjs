@@ -23,6 +23,7 @@ const createPietFixture = async (t) => {
     "web/package.json": '{"type":"module"}',
     "web/node_modules/vite/package.json": '{"type":"module"}',
     "backend/src/index.ts": `console.log(JSON.stringify({role: "backend", cwd: process.cwd(), secret: process.env.PIET_CLI_TEST_SECRET, origin: process.env.PIET_WEB_ORIGIN})); setInterval(() => {}, 1000);`,
+    "backend/src/piAuth.ts": `console.log(JSON.stringify({role: "auth", cwd: process.cwd()})); process.exitCode = process.env.PIET_CLI_TEST_AUTH === "fail" ? 3 : 0;`,
     "web/node_modules/vite/bin/vite.js": `console.log(JSON.stringify({role: "web", cwd: process.cwd(), ws: process.env.VITE_WS_URL, args: process.argv.slice(2)})); setInterval(() => {}, 1000);`,
     ".env": "PIET_CLI_TEST_SECRET=checkout\n",
   };
@@ -133,6 +134,21 @@ test("Piet CLI uses the caller workspace and stops both servers on SIGTERM", asy
     "--strictPort",
     "--open",
   ]);
+});
+
+test("Piet CLI checks pi credentials in the workspace before starting servers", async (t) => {
+  const fixture = await createPietFixture(t);
+  const messages = await runPietFixture(t, fixture, []);
+  assert.deepEqual(messages[0], { role: "auth", cwd: fixture.workspace });
+
+  const result = spawnSync(process.execPath, [fixture.cli], {
+    cwd: fixture.workspace,
+    env: { ...process.env, PIET_CLI_TEST_AUTH: "fail" },
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 3);
+  assert.doesNotMatch(result.stdout, /"role":"(backend|web)"/);
 });
 
 test("Piet CLI skips an occupied default web UI port", async (t) => {

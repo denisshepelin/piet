@@ -49,7 +49,7 @@ State-specific fields:
 | `error`             | `error`    |
 | `cancelled`         | `reason`   |
 
-A terminal run never becomes active again; retry creates another run. The browser rejects stale/duplicate sequences, preserves completed results on disconnect, and ignores updates to dismissed terminal runs. History is bounded and in memory.
+A terminal run never becomes active again; retry creates another run. The browser rejects stale/duplicate sequences, preserves completed results on disconnect, and ignores updates to dismissed terminal runs. Run history is bounded and in backend memory; on connect the backend sends the current runs.
 
 ## Canvas request lifecycle
 
@@ -72,4 +72,4 @@ The agent socket binds to `127.0.0.1` and accepts only the local Vite developmen
 
 ## Limits
 
-The document uses tldraw local persistence. Sessions/tasks do not survive backend restart or browser reload. A disconnected browser retains its received task results but must reload to reconnect. Switching away from a request's page causes a safe failure rather than a hidden page switch. Voice capture, durable task replay, and collaboration sync remain separate future work.
+The document uses tldraw local persistence. The agent conversation and its tasks are durable in the backend (see [the durable session](main-subagent-design.md#durable-session)) and survive browser reloads and backend restarts. A disconnected browser retains its received task results but must reload to reconnect. Switching away from a request's page causes a safe failure rather than a hidden page switch. Voice capture, durable task replay, and collaboration sync remain separate future work.

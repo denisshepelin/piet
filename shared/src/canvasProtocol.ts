@@ -629,6 +629,10 @@ export type CanvasElementSummary = Static<typeof elementSummary>;
 /** Intent context is captured at text submission or voice recording start, before later canvas edits. */
 export type PromptCanvasContext = Static<typeof promptContext>;
 
+/** Validates prompt canvas context read back from storage. */
+export const isPromptCanvasContext = (value: unknown): value is PromptCanvasContext =>
+  Check(promptContext, value);
+
 /** A Piet comment thread as the model sees it: position, distance from the anchor, and recent messages. */
 export type CanvasCommentThreadSummary = Static<typeof commentThreadSummary>;
 

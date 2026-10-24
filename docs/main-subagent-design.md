@@ -15,7 +15,7 @@ The main session handles all drawing through native shapes, whole-diagram Mermai
 
 Defaults are `openai-codex/gpt-6-astra` with low thinking for main and `openai-codex/gpt-5.6-luna` with medium thinking for the `worker` role. Model IDs/providers can be overridden with `MAIN_MODEL_ID`, `MAIN_MODEL_PROVIDER`, `WORKER_MODEL_ID`, and `WORKER_MODEL_PROVIDER`; model and thinking settings can also be changed in the inspector. These defaults are an experiment, not a benchmark claim that Luna is faster than Sol.
 
-Workers use a short standalone system prompt rather than inheriting the full coding-agent prompt, extensions, skills, or user context files. They answer questions from the workspace, run commands, and create or edit files, for example saving a selected design as an HTML mockup. For questions they start with relevant docs and verify only necessary implementation details; for file work they write only the requested files and report absolute paths. Answers normally stay under 200 words. Workers run in the backend's working directory with `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`. There is no sandbox; instructions not to commit, push, or touch credentials are the only boundary.
+Workers use a short standalone system prompt rather than inheriting the full coding-agent prompt, extensions, skills, or user context files. They answer questions from the workspace, run commands, and create or edit files, for example saving a selected design as an HTML mockup. For questions they start with relevant docs and verify only necessary implementation details; for file work they write only the requested files and report absolute paths. Answers normally stay under 200 words. Workers run in the backend's working directory with pi-durable's coding tools: `read`, `bash`, `edit`, and `write`; searching and listing go through `bash`. There is no sandbox; instructions not to commit, push, or touch credentials are the only boundary.
 
 Workers are not a general escape hatch for slow answers. The main agent delegates only when a request needs workspace access it lacks: facts from local files or command output, or a file to create, save, or change. General knowledge, drafts, and all drawing stay with the main agent. This is prompt guidance rather than a runtime quota; the only hard limits are the lifecycle bounds below.
 
@@ -35,7 +35,7 @@ Only background tasks are asynchronous. The main session is serial while drawing
 
 ## Images
 
-The main agent places real pictures with `put_image` instead of drawing them with shapes. It finds them with the provider's hosted web search, added to OpenAI Responses API payloads (`openai-codex`, `openai`, Azure) through the session's `onPayload` hook. Search adds several seconds, so the prompt reserves it for finding images and explicitly current information.
+The main agent places real pictures with `put_image` instead of drawing them with shapes. It finds them with the provider's hosted web search, added to OpenAI Responses API payloads (`openai-codex`, `openai`, Azure) by wrapping the Harness's `Models` so every `streamSimple` request carries an `onPayload` hook (`backend/src/webSearch.ts`). Search adds several seconds, so the prompt reserves it for finding images and explicitly current information.
 
 `put_image` resolves its `src` in the backend: a direct image URL, a web page URL (its `og:image`/Twitter/`image_src` preview), a local path (absolute, `~/`, `file://`, or relative to the backend directory), or a data URL. The backend sends the browser a data URL, so cross-origin restrictions do not apply. There is no host or path filtering; the only limit is 20 MB per image, which keeps the base64 message under the 32 MB socket limit. The browser keeps the image's aspect ratio when only `w` or `h` is given, fits unsized images to 400px on their longest side, and returns the placed bounds. Session traces elide data URLs longer than 4 KB. Workers list relevant repository image paths so the main agent can place them.
 
@@ -49,7 +49,7 @@ Text answers go on the canvas as tldraw comments, not chat. The main agent calls
 
 Piet threads (started by the agent, shown with the Piet mark) are conversations with the agent; threads the user starts with the comment tool are regular tldraw comments and never reach the model. Every prompt carries the open Piet threads on the page (`comments`: position, distance from the anchor, recent messages), and a thread whose first request had exactly this selection is flagged `sameSelection`, or `sharedSelection` when the selections overlap. The `put_comment` guidelines tell the model to reply in a thread when the selection is same or shared, the thread's pin is within about 150 px of the anchor, or nothing is selected and the question plainly continues it, and to start a new thread for a different shape or part. `put_comment` takes an optional `threadId` to reply in one of them, or `"new"` to start a new thread. Without it, the answer goes to the thread the user replied in, then the thread this request already used, then the same-selection thread, and otherwise a new thread. A thread follows newer content only for the request that started it. When the user replies in a Piet thread, the reply is sent as a prompt anchored at the thread with its whole conversation (`thread`), and the answer lands in that thread. `<Tldraw persistenceKey>` cannot register the comment record types, so the app builds its persisted store with tldraw's internal `useLocalStore` (`web/src/canvasStore.ts`), keeping the same IndexedDB document.
 
-Main turns have a two-minute deadline. Background tasks have four executing slots, eight active tasks and a five-minute deadline including queue time. Cancellation and late-result isolation remain task-scoped. Failed tasks stay visible with retry/dismiss controls. Clean completions move to inspector history.
+Main turns have a two-minute deadline. At most eight background tasks are active at once, each with a five-minute deadline from its creation; workers start at once, without a queue of executing slots. Cancellation and late-result isolation remain task-scoped. Failed tasks stay visible with retry/dismiss controls. Clean completions move to inspector history.
 
 ## Canvas safety
 
@@ -61,8 +61,27 @@ Browser execution is deterministic application code, not an agent. PNG observati
 
 ## Lifetime
 
-The control connection and sessions are in memory. Disconnect aborts unfinished work; locally persisted canvas content and already received results remain. Reload starts a new conversation. There is no automatic replay, cross-device task persistence, or collaboration server.
+The conversation, its queued requests, workers, and their results are durable: they live in a pi-durable Harness stored in `<workspace>/.piet/session.sqlite` (`PIET_SESSION_PATH` overrides it). Disconnecting or reloading the browser no longer aborts anything; a reconnecting browser receives the current runs and continues the same conversation. Restarting the backend resumes unfinished work from its last checkpoint: a model request is retried, a worker continues, and a canvas tool call that was cut off returns an `interrupted` error to the model, because canvas writes are not safe to replay. Canvas tools act on the newest connected browser; with none connected they fail. There is no cross-device sync or collaboration server.
+
+## Durable session
+
+`backend/src/pietHarness.ts` opens the Harness; `backend/src/pietAgent.ts` bridges it to the browser protocol.
+
+| Piet                               | pi-durable                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Main agent                         | The root conversation, with the `piet-canvas` and `piet-workers` extensions                            |
+| User prompt                        | An input submitted with `requestId` = prompt id and a `piet.prompt` entry carrying the canvas context  |
+| Response queue                     | The conversation inbox (`whenBusy: "followUp"`): one run per input                                     |
+| Canvas request context             | The newest `piet.prompt` entry of the conversation, read by each tool call                             |
+| Cancel a queued / running response | `abortSubmission()` / `abortTask()` of the run                                                         |
+| `spawn_task` worker                | A background `piet.worker` task that owns a child conversation with `CodingTools`                      |
+| Worker result                      | A follow-up input the worker task submits to the root conversation (`requestId` keeps it exactly-once) |
+| Worker list and model              | The `piet.workers` document of the root conversation                                                   |
+| Main model and thinking level      | The root conversation's agent (`configure()`)                                                          |
+| Streaming `put_shapes`             | The committed partial generation in `pi.live`, read while it streams                                   |
+
+Run snapshots, activity lines, and per-turn canvas repair limits stay in backend memory; they are presentation, not state the agent needs after a restart.
 
 ## Tool guidelines
 
-Each tool carries its own `promptSnippet` and `promptGuidelines`. pi only renders those into its default coding-assistant system prompt and drops them when a custom system prompt is set, so the main session's resource loader is wrapped with `withToolGuidance` (`backend/src/toolGuidance.ts`): it appends a "Tool guidelines" section, built from the tools the session actually has, after `MAIN_SYSTEM_PROMPT`. Put tool-specific usage rules on the tool; keep cross-cutting behavior in the system prompt.
+Each tool carries its own `promptSnippet` and `promptGuidelines`. The `piet-canvas` extension renders `MAIN_SYSTEM_PROMPT` as its first prompt section and a "Tool guidelines" section after it, built with `formatToolGuidance` (`backend/src/toolGuidance.ts`) from the tools each request actually offers. Put tool-specific usage rules on the tool; keep cross-cutting behavior in the system prompt.

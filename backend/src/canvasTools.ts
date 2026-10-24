@@ -6,11 +6,11 @@ import {
   type Static,
   type TextContent,
   type ToolCall,
+  type TSchema,
 } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-  defineTool,
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
@@ -41,6 +41,43 @@ const MAX_ELEMENTS_LIMIT = 1_000;
 const MAX_BATCH_ELEMENTS = 12;
 
 const MAX_STREAMED_BATCHES = 32;
+
+/** The request a canvas tool call serves: its prompt, the user's words, and the submission-time canvas. */
+export type CanvasTurn = {
+  readonly promptId: string;
+  readonly userRequest: string;
+  readonly canvasContext: PromptCanvasContext;
+};
+
+/** What one canvas tool invocation knows about its call. */
+export type CanvasToolCall = {
+  readonly toolCallId: string;
+  readonly turn: CanvasTurn;
+  readonly signal?: AbortSignal;
+};
+
+/** A canvas tool's model-facing result: content for the model, structured details for UIs and traces. */
+export type CanvasToolResult = {
+  readonly content: (TextContent | ImageContent)[];
+  readonly details: object;
+};
+
+/** A model tool that acts on the browser canvas, with the usage notes the system prompt lists for it. */
+export type CanvasTool<TParameters extends TSchema = TSchema> = {
+  readonly name: string;
+  readonly description: string;
+  readonly promptSnippet?: string;
+  readonly promptGuidelines?: readonly string[];
+  readonly parameters: TParameters;
+  execute(params: Static<TParameters>, call: CanvasToolCall): Promise<CanvasToolResult>;
+};
+
+/** Canvas RPC bound to the turn a tool call serves, so turn-scoped repair limits apply to it. */
+export type RequestTurnCanvas = (turn: CanvasTurn) => RequestCanvas;
+
+const defineCanvasTool = <TParameters extends TSchema>(
+  tool: CanvasTool<TParameters>,
+): CanvasTool<TParameters> => tool;
 
 const elementFields = {
   type: Type.String({
@@ -459,29 +496,20 @@ const canvasMutationReferences = (
 
 /** Model tools own canvas observation fingerprints and page-scoped RPC context for each turn. */
 export const createCanvasTools = (
-  connectionRequest: RequestCanvas,
-  getPromptCanvasContext: () => PromptCanvasContext | undefined = () => undefined,
-  {
-    resolveImage = resolveImageSource,
-    getUserRequest = () => undefined,
-  }: {
-    resolveImage?: typeof resolveImageSource;
-    /** The user's words behind the active turn, shown above Piet's first answer in a thread. */
-    getUserRequest?: () => string | undefined;
-  } = {},
+  connectionRequest: RequestTurnCanvas,
+  { resolveImage = resolveImageSource }: { resolveImage?: typeof resolveImageSource } = {},
 ) => {
   const observations = new Map<string, Record<string, string>>();
   const placements = new Map<string, readonly string[]>();
   const knownIds = new Set<string>();
 
   const requestCanvas = async <A extends CanvasAction>(
+    turn: CanvasTurn,
     action: A,
     params: CanvasActionParams<A>,
     signal?: AbortSignal,
   ): Promise<CanvasActionResult<A>> => {
-    const context = getPromptCanvasContext();
-
-    if (!context) throw new Error("Canvas tools require an active request context");
+    const context = turn.canvasContext;
     let expectedElements = observations.get(context.capturedAt);
 
     if (!expectedElements) {
@@ -499,7 +527,7 @@ export const createCanvasTools = (
       }
     }
 
-    const result = await connectionRequest(
+    const result = await connectionRequest(turn)(
       action,
       params,
       (() => {
@@ -556,13 +584,11 @@ export const createCanvasTools = (
     return result;
   };
 
-  const getCanvasTool = defineTool({
+  const getCanvasTool = defineCanvasTool({
     name: "get_canvas",
-    label: "Get Canvas",
     description:
       "Get current tldraw page context as structured JSON. Set includeImage true when visual review is needed. Scope can be viewport or page. JSON output is truncated to 2000 lines or 50KB; use maxShapes to limit shape count.",
-    promptSnippet:
-      "Read canvas bounds and shapes; optionally request a PNG for visual review.",
+    promptSnippet: "Read canvas bounds and shapes; optionally request a PNG for visual review.",
     promptGuidelines: [
       "The submission context already lists the selection and visible shapes. Call get_canvas only when that is not enough: styles, props, or bindings of existing shapes, a truncated visible list, visual questions about the drawing, or context made stale by background work.",
       "Use get_canvas with scope 'viewport' first for visible context; use scope 'page' only when the whole current canvas is needed.",
@@ -586,8 +612,9 @@ export const createCanvasTools = (
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const result = await requestCanvas(
+        turn,
         "get_canvas",
         {
           scope: normalizeScope(params.scope),
@@ -604,9 +631,8 @@ export const createCanvasTools = (
     },
   });
 
-  const getSelectionTool = defineTool({
+  const getSelectionTool = defineCanvasTool({
     name: "get_selection",
-    label: "Get Selection",
     description:
       "Get the tldraw shapes that were selected when the active request was submitted. This immutable JSON snapshot is task-scoped, so later user or agent selection changes do not affect it. Returns an empty shapes array when nothing was selected.",
     promptSnippet: "Get the submission-time selected group of tldraw objects.",
@@ -622,16 +648,8 @@ export const createCanvasTools = (
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
-      const captured = getPromptCanvasContext();
-
-      const result = captured
-        ? capturedSelectionSnapshot(captured, params.maxShapes)
-        : await requestCanvas(
-            "get_canvas",
-            { scope: "selection", maxShapes: normalizeMaxElements(params.maxShapes) },
-            signal,
-          );
+    async execute(params, { turn }) {
+      const result = capturedSelectionSnapshot(turn.canvasContext, params.maxShapes);
 
       return {
         content: snapshotContent(result),
@@ -640,9 +658,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putElementTool = defineTool({
+  const putElementTool = defineCanvasTool({
     name: "put_shape",
-    label: "Put Shape",
     description:
       "Create ONE tldraw shape on the current page. Call once per shape, in drawing order: creation order is z-order, so place background zones first, then boxes with labels, then arrows, then annotations. Coordinates are page-space. For labels/content, pass text; for geometry use type 'geo' and props like { geo: 'rectangle', w: 200, h: 100, fill: 'solid', color: 'blue' }. For arrows connecting shapes, bind with startShapeId/endShapeId (create the boxes first, then the arrow). Results may include Tip: lines when input was auto-corrected — follow them next time.",
     promptSnippet: "Create one tldraw shape on the current canvas/page.",
@@ -656,9 +673,9 @@ export const createCanvasTools = (
       "Tool results report measured bounds and layout problems.",
     ],
     parameters: elementParams,
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const { shape: element, tips } = normalizeElement(params);
-      const result = await requestCanvas("put_shape", { shape: element }, signal);
+      const result = await requestCanvas(turn, "put_shape", { shape: element }, signal);
 
       const lines = [`Created shape ${result.createdShapeId}`];
 
@@ -685,18 +702,19 @@ export const createCanvasTools = (
 
   /** Commits put_shapes elements as soon as their JSON is final, before the tool call executes. */
   const streamPutElements = (
+    turn: CanvasTurn,
     toolCallId: string,
     args: ToolCall["arguments"],
     complete: boolean,
   ): void => {
-    const context = getPromptCanvasContext();
+    const context = turn.canvasContext;
 
     const ready = streamableElements(
       args,
       complete,
       new Set([
         ...knownIds,
-        ...(context?.selection.shapes.map((element) => bareId(element.id)) ?? []),
+        ...(context.selection.shapes.map((element) => bareId(element.id)) ?? []),
       ]),
     );
 
@@ -720,7 +738,7 @@ export const createCanvasTools = (
     const previous = batch.commits.at(-1) ?? Promise.resolve();
 
     const commit = previous.then(async () => ({
-      result: await requestCanvas("put_shapes", {
+      result: await requestCanvas(turn, "put_shapes", {
         shapes: normalized.map((element) => element.shape),
       }),
       tips: normalized.flatMap((element) => element.tips),
@@ -730,12 +748,11 @@ export const createCanvasTools = (
     batch.commits.push(commit);
   };
 
-  const putElementsTool = defineTool({
+  const putElementsTool = defineCanvasTool({
     name: "put_shapes",
-    label: "Draw Canvas Batch",
     description: `Validate and commit a batch of up to ${MAX_BATCH_ELEMENTS} editable shapes. Shapes appear on the canvas one by one while this call is still being generated, in array order, so order them as they should be drawn: title/root first, then nodes, then bound connectors. A rejected shape stops the rest of the call; shapes before it stay committed and the error lists them. Correct and resend only uncommitted shapes. Bind arrows to existing shapes or earlier shapes in this batch. Use placement.below for measured vertical spacing.`,
     parameters: putElementsParams,
-    async execute(toolCallId, params, signal) {
+    async execute(params, { toolCallId, turn, signal }) {
       const batch = streamedBatches.get(toolCallId);
       streamedBatches.delete(toolCallId);
       const settled = await Promise.allSettled(batch?.commits ?? []);
@@ -760,6 +777,7 @@ export const createCanvasTools = (
           ? undefined
           : {
               result: await requestCanvas(
+                turn,
                 "put_shapes",
                 { shapes: remaining.map((element) => element.shape) },
                 signal,
@@ -792,9 +810,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putMermaidTool = defineTool({
+  const putMermaidTool = defineCanvasTool({
     name: "put_mermaid",
-    label: "Put Mermaid",
     description:
       "Create a whole diagram from Mermaid source as native, editable tldraw shapes (boxes plus bound arrows) with layout computed for you. Supports flowchart/graph, sequenceDiagram, stateDiagram-v2, and mindmap; other Mermaid kinds are placed as a static SVG fallback. Prefer this for complex diagrams where automatic layout helps, or to reuse suitable Mermaid source supplied by a background worker. x/y place the diagram's top-left in page space; omit both to place at the viewport center.",
     promptSnippet: "Create a full diagram on the tldraw canvas from Mermaid source in one call.",
@@ -812,8 +829,9 @@ export const createCanvasTools = (
       x: Type.Optional(Type.Number({ description: "Page-space x of the diagram's top-left." })),
       y: Type.Optional(Type.Number({ description: "Page-space y of the diagram's top-left." })),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const result = await requestCanvas(
+        turn,
         "put_mermaid",
         { source: params.source, x: params.x, y: params.y },
         signal,
@@ -842,9 +860,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putImageTool = defineTool({
+  const putImageTool = defineCanvasTool({
     name: "put_image",
-    label: "Put Image",
     description:
       "Place an image on the canvas as a native tldraw image shape. src may be a direct image URL, a web page URL (its preview image is used), a local file path (absolute, ~/, or relative to the backend directory), or a data URL. The backend fetches or reads the image, so any reachable URL works. x/y set the top-left; give w or h to size it (the other side keeps the aspect ratio), otherwise it is fitted to about 400px.",
     promptSnippet:
@@ -868,10 +885,11 @@ export const createCanvasTools = (
       w: Type.Optional(Type.Number({ minimum: 1, description: "Displayed width." })),
       h: Type.Optional(Type.Number({ minimum: 1, description: "Displayed height." })),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const image = await resolveImage(params.src, signal);
 
       const result = await requestCanvas(
+        turn,
         "put_image",
         {
           ...params,
@@ -894,9 +912,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putDrawTool = defineTool({
+  const putDrawTool = defineCanvasTool({
     name: "put_draw",
-    label: "Put Draw",
     description:
       "Create a native editable tldraw freehand drawing from page-space points, or append a new stroke segment to an existing draw shape by passing id. Point encoding is handled for you. Style fields apply when creating a new shape.",
     promptSnippet: "Draw or append a freehand stroke from page-space points.",
@@ -924,8 +941,8 @@ export const createCanvasTools = (
       ),
       isClosed: Type.Optional(Type.Boolean()),
     }),
-    async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("put_draw", params, signal);
+    async execute(params, { turn, signal }) {
+      const result = await requestCanvas(turn, "put_draw", params, signal);
 
       return {
         content: [
@@ -939,9 +956,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putHighlightTool = defineTool({
+  const putHighlightTool = defineCanvasTool({
     name: "put_highlight",
-    label: "Put Highlight",
     description:
       "Create a native editable tldraw highlight stroke from page-space points, or append a segment to an existing highlight shape by passing id. Point encoding is handled for you.",
     promptSnippet: "Add or append a highlight stroke from page-space points.",
@@ -959,8 +975,8 @@ export const createCanvasTools = (
       color: colorParams,
       size: sizeParams,
     }),
-    async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("put_highlight", params, signal);
+    async execute(params, { turn, signal }) {
+      const result = await requestCanvas(turn, "put_highlight", params, signal);
 
       return {
         content: [
@@ -974,9 +990,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putLineTool = defineTool({
+  const putLineTool = defineCanvasTool({
     name: "put_line",
-    label: "Put Line",
     description:
       "Create a native editable tldraw multi-point line from page-space points. Use spline 'line' for straight segments or 'cubic' for a smooth path. For semantic connections between shapes, use bound arrows instead.",
     promptSnippet: "Create a native straight or curved multi-point tldraw line.",
@@ -992,8 +1007,8 @@ export const createCanvasTools = (
       dash: dashParams,
       spline: Type.Optional(Type.Union([Type.Literal("line"), Type.Literal("cubic")])),
     }),
-    async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("put_line", params, signal);
+    async execute(params, { turn, signal }) {
+      const result = await requestCanvas(turn, "put_line", params, signal);
 
       return {
         content: [
@@ -1007,9 +1022,8 @@ export const createCanvasTools = (
     },
   });
 
-  const updateElementTool = defineTool({
+  const updateElementTool = defineCanvasTool({
     name: "update_shape",
-    label: "Update Shape",
     description:
       "Update ONE existing tldraw shape by id: text, style/geometry props, position, rotation, opacity, or arrow bindings (startShapeId/endShapeId). Provide id, type, and only the fields to change; props are merged into the shape's existing props. x/y move the shape's bounds top-left in page space.",
     promptSnippet: "Update an existing tldraw shape by id.",
@@ -1019,10 +1033,11 @@ export const createCanvasTools = (
       "Use ids returned by get_canvas, get_selection, put_shape, or put_shapes.",
     ],
     parameters: updateElementParams,
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const { shape: element, tips } = normalizeElement(params);
 
       const result = await requestCanvas(
+        turn,
         "update_shape",
         { shape: { ...element, id: params.id } },
         signal,
@@ -1049,9 +1064,8 @@ export const createCanvasTools = (
     },
   });
 
-  const deleteElementsTool = defineTool({
+  const deleteElementsTool = defineCanvasTool({
     name: "delete_shapes",
-    label: "Delete Shapes",
     description:
       "Delete one or more tldraw shapes by id. Deleting a shape also removes bindings to it; arrows bound to it stay behind unbound.",
     promptSnippet: "Delete tldraw shapes by id.",
@@ -1062,8 +1076,8 @@ export const createCanvasTools = (
     parameters: Type.Object({
       ids: Type.Array(Type.String(), { description: "Shape ids to delete." }),
     }),
-    async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("delete_shapes", { ids: params.ids }, signal);
+    async execute(params, { turn, signal }) {
+      const result = await requestCanvas(turn, "delete_shapes", { ids: params.ids }, signal);
 
       const lines = [`Deleted ${result.deletedShapeIds.length} shape(s)`];
 
@@ -1078,9 +1092,8 @@ export const createCanvasTools = (
     },
   });
 
-  const moveElementsTool = defineTool({
+  const moveElementsTool = defineCanvasTool({
     name: "move_shapes",
-    label: "Move Shapes",
     description:
       "Move one or more tldraw shapes in a single call. Each move takes absolute x/y (new page-space position of the shape's bounds top-left) or relative dx/dy deltas. Arrows bound to moved shapes re-route automatically.",
     promptSnippet: "Move tldraw shapes to new positions.",
@@ -1105,8 +1118,8 @@ export const createCanvasTools = (
         { description: "Moves to apply. Use x/y or dx/dy per entry." },
       ),
     }),
-    async execute(_toolCallId, params, signal) {
-      const result = await requestCanvas("move_shapes", { moves: params.moves }, signal);
+    async execute(params, { turn, signal }) {
+      const result = await requestCanvas(turn, "move_shapes", { moves: params.moves }, signal);
 
       const lines = [`Moved ${result.movedShapeIds.length} shape(s)`];
 
@@ -1123,9 +1136,8 @@ export const createCanvasTools = (
     },
   });
 
-  const setViewTool = defineTool({
+  const setViewTool = defineCanvasTool({
     name: "set_view",
-    label: "Set View",
     description:
       "Move the camera shared with the user only when the user requests navigation. Pass bounds to frame a page-space region, shapeIds to zoom to specific shapes, or neither to zoom to fit the whole page. Use get_canvas with scope 'page' to inspect off-screen content without moving the camera.",
     promptSnippet: "Move the tldraw camera to a region, to shapes, or to fit the page.",
@@ -1139,8 +1151,9 @@ export const createCanvasTools = (
         Type.Array(Type.String(), { description: "Zoom to fit these shapes." }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(params, { turn, signal }) {
       const result = await requestCanvas(
+        turn,
         "set_view",
         { bounds: params.bounds, shapeIds: params.shapeIds },
         signal,
@@ -1158,9 +1171,8 @@ export const createCanvasTools = (
     },
   });
 
-  const putCommentTool = defineTool({
+  const putCommentTool = defineCanvasTool({
     name: "put_comment",
-    label: "Put Comment",
     description:
       "Answer in text as a Piet comment. To continue a conversation, pass the threadId of the listed Piet thread it follows up (same or shared selection, a pin within about 150 px, or a plain continuation with nothing selected). A new thread is pinned beside the content this request drew or edited, or at the pending-answer marker when nothing was drawn. The comment is the user's only view of a text answer.",
     promptSnippet:
@@ -1181,11 +1193,8 @@ export const createCanvasTools = (
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
-      const context = getPromptCanvasContext();
-
-      if (!context) throw new Error("Canvas tools require an active request context");
-
+    async execute(params, { turn, signal }) {
+      const context = turn.canvasContext;
       const placedIds = placements.get(context.capturedAt) ?? [];
       const selectedIds = context.selection.selectedShapeIds;
 
@@ -1205,11 +1214,11 @@ export const createCanvasTools = (
 
       if (params.threadId === "new") comment.newThread = true;
 
-      const question = context.thread ? undefined : getUserRequest()?.trim();
+      const question = context.thread ? undefined : turn.userRequest.trim();
 
       if (question) comment.question = question.slice(0, 4_000);
 
-      const result = await requestCanvas("put_comment", comment, signal);
+      const result = await requestCanvas(turn, "put_comment", comment, signal);
 
       return {
         content: [
@@ -1225,23 +1234,22 @@ export const createCanvasTools = (
     },
   });
 
-  return {
-    tools: [
-      getCanvasTool,
-      getSelectionTool,
-      putElementTool,
-      putElementsTool,
-      putMermaidTool,
-      putImageTool,
-      putDrawTool,
-      putHighlightTool,
-      putLineTool,
-      updateElementTool,
-      deleteElementsTool,
-      moveElementsTool,
-      setViewTool,
-      putCommentTool,
-    ],
-    streamPutElements,
-  };
+  const tools: CanvasTool[] = [
+    getCanvasTool,
+    getSelectionTool,
+    putElementTool,
+    putElementsTool,
+    putMermaidTool,
+    putImageTool,
+    putDrawTool,
+    putHighlightTool,
+    putLineTool,
+    updateElementTool,
+    deleteElementsTool,
+    moveElementsTool,
+    setViewTool,
+    putCommentTool,
+  ];
+
+  return { tools, streamPutElements };
 };
