@@ -13,18 +13,18 @@
   },
   "dependencies": {
     "@piet/protocol": "workspace:*",
-    "@tldraw/commenting": "^5.4.2",
-    "@tldraw/mermaid": "^5.4.2",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "tldraw": "^5.4.2"
+    "@tldraw/commenting": "^5.6.1",
+    "@tldraw/mermaid": "^5.6.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tldraw": "^5.6.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.4",
-    "tsx": "^4.23.1",
-    "vite": "^8.1.5"
+    "@playwright/test": "^1.65.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tsx": "^4.23.15",
+    "vite": "^8.3.8"
   }
 }

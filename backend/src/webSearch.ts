@@ -1,4 +1,5 @@
-import { Type, type Models, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { Models, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import { wrapStreamSimple } from "./wrapStreamSimple.js";
 

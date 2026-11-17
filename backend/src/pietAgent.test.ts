@@ -243,6 +243,18 @@ test("a prompt runs on the main conversation and its canvas tools act for that r
       ["queued", "running", "running", "done"],
     );
     assert.equal(resultOf(piet.runs("p1").at(-1)), "Answered.");
+    assert.equal(
+      piet.messages
+        .flatMap((message) =>
+          message.type === "text_delta" && message.promptId === "p1" ? [message.delta] : [],
+        )
+        .join(""),
+      "Answered.",
+    );
+    assert.deepEqual(
+      piet.messages.flatMap((message) => (message.type === "tool_start" ? [message.args] : [])),
+      [{ text: "Paris." }],
+    );
     assert.ok(
       piet.messages.some(
         (message) => message.type === "tool_end" && message.promptId === "p1" && !message.isError,

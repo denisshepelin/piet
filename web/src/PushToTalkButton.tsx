@@ -25,7 +25,9 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
   const sessionRef = useRef<PushToTalkSession | null>(null);
   const stateRef = useRef<PushToTalkState>(state);
   const chatRef = useRef(chat);
-  chatRef.current = chat;
+  useLayoutEffect(() => {
+    chatRef.current = chat;
+  }, [chat]);
   const held = useRef<"pointer" | " " | "Enter" | null>(null);
 
   const active =
@@ -39,7 +41,7 @@ export const PushToTalkButton = ({ chat }: { chat: AgentChat }): ReactElement =>
   useLayoutEffect(() => {
     const field = fieldRef.current;
 
-    if (active && field) field.scrollTop = field.scrollHeight;
+    if (active && field && fieldText) field.scrollTop = field.scrollHeight;
   }, [active, fieldText]);
 
   const cancel = (): void => {

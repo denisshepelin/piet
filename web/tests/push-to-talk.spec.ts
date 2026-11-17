@@ -306,6 +306,7 @@ test("the request bar keeps its size and place while recording, finishing, and r
   await page.mouse.up();
   await expect(page.getByRole("status").filter({ hasText: "Finishing" })).toBeVisible();
   expect(await bar.boundingBox()).toEqual(idle);
+  await expect.poll(() => h.controls).toContain("finish");
   h.send({ type: "finished", text: "Draw a box" });
   await expect.poll(() => h.prompts().length).toBe(1);
   const prompt = h.prompts()[0];

@@ -1,13 +1,7 @@
 import { Buffer } from "node:buffer";
 import { canvasElementsForModel } from "./canvasModelContext.js";
-import {
-  Type,
-  type ImageContent,
-  type Static,
-  type TextContent,
-  type ToolCall,
-  type TSchema,
-} from "@earendil-works/pi-ai";
+import { Type, type Static, type TSchema } from "typebox";
+import type { ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,

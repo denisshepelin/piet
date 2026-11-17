@@ -1,6 +1,6 @@
 # Local session traces
 
-Piet writes a trace for each browser connection. Reloading starts a new conversation and a new trace directory. No LLM calls, generated summaries, external telemetry service, or full-UI screenshots are involved.
+Piet writes a trace for each browser connection. Reloading reconnects to the durable conversation and starts a new trace directory. No LLM calls, generated summaries, external telemetry service, or full-UI screenshots are involved.
 
 ```text
 backend/logs/<session-id>/

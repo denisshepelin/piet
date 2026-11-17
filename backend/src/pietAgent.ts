@@ -8,9 +8,11 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   LiveDoc,
-  watchEvents,
-  type AgentEvent,
-  type AgentEventStream,
+  InboxDoc,
+  type LiveState,
+  type InboxState,
+  type ConversationView,
+  type ConversationWatch,
   type ConversationId,
   type JsonObject,
   type Submission,
@@ -82,7 +84,26 @@ type ResponseTurn = {
 };
 
 /** A running worker's conversation, followed for its activity line. */
-type WorkerWatch = { readonly conversationId: ConversationId; readonly stream: AgentEventStream };
+type WorkerWatch = { readonly conversationId: ConversationId; readonly stream: ConversationWatch };
+
+// SAFETY: the Harness publishes its built-in documents under their registered kinds.
+const liveState = (view: ConversationView) =>
+  view.docs[LiveDoc.definition.kind] as LiveState | undefined;
+
+const toolArguments = (view: ConversationView, callId: string): JsonObject => {
+  for (const entry of view.entries.toReversed()) {
+    const message = entry.model?.[0];
+
+    if (message?.role !== "assistant") continue;
+
+    for (const block of message.content) {
+      if (block.type === "toolCall" && block.id === callId && isCanvasJsonObject(block.arguments))
+        return block.arguments;
+    }
+  }
+
+  return {};
+};
 
 const errorText = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -192,27 +213,26 @@ export class PietAgent {
   /** Follows the main conversation's events, its live generation, and its workers. */
   async start(): Promise<void> {
     const { harness, root } = this.#session;
-    const events = await watchEvents(harness, root.id, context);
-    this.#applyEvents([events.snapshot]);
-    await this.#resumeRun(events.snapshot.run?.inputs[0]);
-    events.start(async (batch) => this.#applyEvents(batch));
-
-    const live = await harness.watchDoc(LiveDoc, root.id, context);
-
-    live?.start(async (state) => {
-      this.#runTaskId = state?.run?.taskId;
-      this.#streamDrawing(state?.generation?.message?.content);
+    const conversationWatch = await root.watch(context);
+    let previous = conversationWatch.value;
+    await this.#resumeRun(liveState(previous)?.run?.inputs[0]);
+    this.#applyView(previous, previous);
+    conversationWatch.start(async (call) => {
+      if (call.kind === "failed") throw call.error;
+      this.#applyView(call.value, previous);
+      previous = call.value;
     });
 
     const workers = await harness.watchDoc(WorkersDoc, root.id, context);
 
     if (workers?.value) this.#applyWorkers(workers.value);
 
-    workers?.start(async (state) => {
-      if (state) this.#applyWorkers(state);
+    workers?.start(async (call) => {
+      if (call.kind === "failed") throw call.error;
+      this.#applyWorkers(call.value);
     });
 
-    this.#stops = [events, live, workers].flatMap((watch) =>
+    this.#stops = [conversationWatch, workers].flatMap((watch) =>
       watch
         ? [
             async () => {
@@ -501,122 +521,107 @@ export class PietAgent {
     await this.#settle(turn, submission);
   }
 
-  #applyEvents(events: readonly AgentEvent[]): void {
-    for (const event of events) {
-      if (event.type !== "message_update" && event.type !== "tool_execution_update") {
-        this.#logEvent({
-          source: "backend",
-          connId: "agent",
-          agent: "main",
-          event: `agent.${event.type}`,
-          data: event,
-        });
-      }
+  #applyView(view: ConversationView, previous: ConversationView): void {
+    const live = liveState(view);
+    const before = liveState(previous);
+    const lastId = previous.entries.at(-1)?.id ?? 0;
+    const partial = live?.generation?.message;
+    const priorPartial = before?.generation?.message;
 
-      this.#applyEvent(event);
+    const sameGeneration =
+      live?.run?.taskId === before?.run?.taskId &&
+      live?.generation?.attempt === before?.generation?.attempt;
+
+    this.#runTaskId = live?.run?.taskId;
+    this.#runInputs = live?.run?.inputs ?? [];
+    // SAFETY: the Harness publishes the inbox under its registered kind.
+    const inbox = view.docs[InboxDoc.definition.kind] as InboxState | undefined;
+    this.#inboxSize = inbox?.items.length ?? 0;
+
+    for (const entry of view.entries) {
+      if (entry.id <= lastId) continue;
+      const message = entry.model?.[0];
+      const prompt = canvasPromptOf(entry);
+      this.#logEvent({
+        source: "backend",
+        connId: "agent",
+        agent: "main",
+        event: "agent.message_end",
+        data: { entry },
+      });
+
+      if (prompt) this.#begin(prompt, messageText(message));
+      else if (this.#current && message?.role === "assistant") {
+        this.#sendAssistantText(messageText(message), messageText(priorPartial));
+      }
     }
 
-    this.#syncBusy();
-  }
-
-  #applyEvent(event: AgentEvent): void {
     const turn = this.#current;
 
-    switch (event.type) {
-      case "snapshot":
-        this.#runInputs = event.run?.inputs ?? [];
-        this.#inboxSize = event.inbox.length;
+    if (turn && this.#runInputs.length && !turn.followed) {
+      turn.followed = true;
+      void this.#follow(turn, this.#runInputs[0]);
+    }
 
-        return;
-      case "run_start":
-        this.#runInputs = event.inputs;
+    if (turn && partial) {
+      this.#sendAssistantText(
+        messageText(partial),
+        sameGeneration ? messageText(priorPartial) : "",
+      );
 
-        if (turn && !turn.followed) {
-          turn.followed = true;
-          void this.#follow(turn, event.inputs[0]);
-        }
+      if (
+        partial.content.at(-1)?.type === "thinking" &&
+        turn.run.status === "running" &&
+        turn.run.activity !== "Reasoning"
+      )
+        this.#publish(turn, { ...turn.run, activity: "Reasoning" });
+      this.#streamDrawing(partial.content);
+    }
 
-        return;
-      case "run_end":
-        this.#runInputs = [];
+    for (const slot of live?.tools ?? []) {
+      if (!turn || slot.status === "pending") continue;
+      const prior = before?.tools?.find((tool) => tool.callId === slot.callId);
 
-        if (turn?.submissionId !== undefined && event.inputs.includes(turn.submissionId))
-          this.#current = undefined;
+      if (prior?.status === slot.status) continue;
 
-        return;
-      case "inbox_update":
-        this.#inboxSize = event.items.length;
-
-        return;
-      case "message_end": {
-        const prompt = canvasPromptOf(event.entry);
-        const message = event.entry.model?.[0];
-
-        if (prompt) this.#begin(prompt, messageText(message));
-        else if (turn && message?.role === "assistant") turn.assistantText = messageText(message);
-
-        return;
-      }
-
-      case "message_start":
-        if (turn && event.message.role === "assistant") turn.assistantText = "";
-
-        return;
-      case "message_update":
-        if (!turn) return;
-
-        for (const change of event.changes) {
-          if (change.type === "text_delta") {
-            turn.assistantText = (turn.assistantText + change.delta).slice(-MAX_ASSISTANT_TEXT);
-            this.#broadcast({
-              type: "text_delta",
-              promptId: turn.prompt.promptId,
-              delta: change.delta,
-            });
-          } else if (
-            change.type === "thinking_delta" &&
-            turn.run.status === "running" &&
-            turn.run.activity !== "Reasoning"
-          ) {
-            this.#publish(turn, { ...turn.run, activity: "Reasoning" });
-          }
-        }
-
-        return;
-      case "tool_execution_start":
-        if (!turn || event.parentToolCallId !== undefined) return;
-
+      if (!prior || prior.status === "pending") {
         if (turn.run.status === "running")
-          this.#publish(turn, { ...turn.run, activity: event.toolName.replaceAll("_", " ") });
+          this.#publish(turn, { ...turn.run, activity: slot.name.replaceAll("_", " ") });
         this.#broadcast({
           type: "tool_start",
           promptId: turn.prompt.promptId,
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          args: event.args,
+          toolCallId: slot.callId,
+          toolName: slot.name,
+          args: toolArguments(view, slot.callId),
         });
+      }
 
-        return;
-      case "tool_execution_end": {
-        if (!turn || event.parentToolCallId !== undefined) return;
-        const message = event.entry?.model?.[0];
+      if (slot.status === "done") {
+        const message = view.entries.find((entry) => entry.id === slot.entry)?.model?.[0];
         const result = message?.role === "toolResult" ? message : undefined;
-
         this.#broadcast({
           type: "tool_end",
           promptId: turn.prompt.promptId,
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
+          toolCallId: slot.callId,
+          toolName: slot.name,
           result: { content: result?.content ?? [], details: result?.details },
           isError: result?.isError ?? true,
         });
-
-        return;
       }
-
-      default:
-        return;
     }
+
+    if (!live?.run) this.#current = undefined;
+    this.#syncBusy();
+  }
+
+  #sendAssistantText(text: string, previous: string): void {
+    const turn = this.#current;
+
+    if (!turn) return;
+    turn.assistantText = text.slice(-MAX_ASSISTANT_TEXT);
+    const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
+
+    if (delta) this.#broadcast({ type: "text_delta", promptId: turn.prompt.promptId, delta });
   }
 
   #syncBusy(): void {
@@ -793,50 +798,72 @@ export class PietAgent {
 
   async #followWorker(run: WorkerRun, conversationId: ConversationId): Promise<void> {
     if (this.#workerWatches.has(run.runId)) return;
-    const stream = await watchEvents(this.#session.harness, conversationId, context);
+    const conversation = await this.#session.harness.conversation(conversationId, context);
 
-    if (this.#workerWatches.has(run.runId)) {
+    if (!conversation) return;
+    const stream = await conversation.watch(context);
+
+    if (
+      this.#stopping ||
+      this.#workers[run.runId]?.status !== "running" ||
+      this.#workerWatches.has(run.runId)
+    ) {
       await stream.stop();
 
       return;
     }
 
     this.#workerWatches.set(run.runId, { conversationId, stream });
-    stream.start(async (events) => {
-      for (const event of events) {
-        if (event.type !== "message_update" && event.type !== "tool_execution_update") {
-          this.#logEvent({
-            source: "backend",
-            connId: "agent",
-            agent: "worker",
-            event: "worker.session_event",
-            data: { runId: run.runId, promptId: run.promptId, event },
-          });
-        }
+    let lastEntryId = stream.value.entries.at(-1)?.id ?? 0;
 
-        const activity =
-          event.type === "tool_execution_start"
-            ? summarizeToolUse(event.toolName, event.args)
-            : event.type === "tool_execution_end" &&
-                event.entry?.model?.[0]?.role === "toolResult" &&
-                event.entry.model[0].isError
-              ? truncateStep(`${event.toolName} failed`)
-              : event.type === "message_update"
-                ? event.changes.some((change) => change.type === "text_delta")
-                  ? "drafting result…"
-                  : event.changes.some((change) => change.type === "thinking_delta")
-                    ? "reasoning…"
-                    : undefined
-                : undefined;
-
-        const current = this.#workers[run.runId];
-
-        if (activity === undefined || !current || current.status !== "running") continue;
-
-        if (this.#workerActivity.get(run.runId) === activity) continue;
-        this.#workerActivity.set(run.runId, activity);
-        this.#publishWorker(current);
+    const update = (view: ConversationView): void => {
+      for (const entry of view.entries) {
+        if (entry.id <= lastEntryId) continue;
+        lastEntryId = entry.id;
+        this.#logEvent({
+          source: "backend",
+          connId: "agent",
+          agent: "worker",
+          event: "worker.session_event",
+          data: { runId: run.runId, promptId: run.promptId, event: { type: "message_end", entry } },
+        });
       }
+
+      const live = liveState(view);
+      const tool = live?.tools?.find((slot) => slot.status === "running");
+      const lastBlock = live?.generation?.message?.content.at(-1);
+
+      const activity = tool
+        ? summarizeToolUse(tool.name, toolArguments(view, tool.callId))
+        : lastBlock?.type === "text"
+          ? "drafting result…"
+          : lastBlock?.type === "thinking"
+            ? "reasoning…"
+            : undefined;
+
+      const current = this.#workers[run.runId];
+
+      if (
+        !activity ||
+        current?.status !== "running" ||
+        this.#workerActivity.get(run.runId) === activity
+      )
+        return;
+      this.#workerActivity.set(run.runId, activity);
+      this.#logEvent({
+        source: "backend",
+        connId: "agent",
+        agent: "worker",
+        event: "worker.session_event",
+        data: { runId: run.runId, promptId: run.promptId, activity },
+      });
+      this.#publishWorker(current);
+    };
+
+    update(stream.value);
+    stream.start(async (call) => {
+      if (call.kind === "failed") throw call.error;
+      update(call.value);
     });
   }
 

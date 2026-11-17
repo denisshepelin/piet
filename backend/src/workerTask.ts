@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { Type, type AssistantMessage, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
   configure,
