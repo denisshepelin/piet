@@ -11,6 +11,9 @@ The agent runs on [pi-durable](https://earendil.com/posts/pi-durable/): the conv
 background tasks are stored in `.piet/session.sqlite` inside the folder you launch Piet in, so a
 browser reload or a backend restart continues where it left off.
 
+<img width="1902" height="1035" alt="SCR-20260930-tovn" src="https://github.com/user-attachments/assets/f308f020-7877-4ae1-9807-c460c035eb52" />
+
+
 ## Installation
 
 Requires Node.js 22.19+ and pnpm 11+.
